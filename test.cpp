@@ -315,30 +315,29 @@ int main(int argc, char** argv)
 
     // BEGIN DECODER INIT
 
-    // struct pt_packet_decoder* pktdecoder;
-    struct pt_insn_decoder* insndecoder;
+    struct pt_packet_decoder* pktdecoder;
+    // struct pt_insn_decoder* insndecoder;
     struct pt_config config;
     int status;
 
     memset(&config, 0, sizeof(config));
     pt_config_init(&config);
     // TODO: Find out if this is correct
-    config.begin = (uint8_t *)header->data_head;
-    config.end = config.begin+header->data_size;
+    config.begin = (uint8_t *)header->aux_head;
+    config.end = config.begin+header->aux_size;
 
-    // pktdecoder = pt_pkt_alloc_decoder(&config);
-    insndecoder = pt_insn_alloc_decoder(&config);
+    pktdecoder = pt_pkt_alloc_decoder(&config);
+    // insndecoder = pt_insn_alloc_decoder(&config);
     
-    // if (!pktdecoder)
-    if (!insndecoder)
+    if (!pktdecoder)
+    // if (!insndecoder)
     {
         printf("Failed to allocate decoder!\n");
         end_child_process();
         exit(EXIT_FAILURE);
     }
 
-    // TODO: Add file to image thingy
-    add_image_file(pt_insn_get_image(insndecoder));
+    // add_image_file(pt_insn_get_image(insndecoder));
 
     printf("Successfully allocated decoder!\n");
     
@@ -355,8 +354,8 @@ int main(int argc, char** argv)
     printf("Synchronizing...\n");
     do
     {
-        // status = pt_pkt_sync_forward(pktdecoder);
-        status = pt_insn_sync_forward(insndecoder);
+        status = pt_pkt_sync_forward(pktdecoder);
+        // status = pt_insn_sync_forward(insndecoder);
     } while (status == -pte_eos);
 
     if (status < 0)
@@ -374,11 +373,11 @@ int main(int argc, char** argv)
     printf("Decoding...\n");
     while (true)
     {
-        // struct pt_packet packet;
-        struct pt_insn insn;
+        struct pt_packet packet;
+        // struct pt_insn insn;
 
-        // status = pt_pkt_next(pktdecoder, &packet, sizeof(packet));
-        status = pt_insn_next(insndecoder, &insn, sizeof(insn));
+        status = pt_pkt_next(pktdecoder, &packet, sizeof(packet));
+        // status = pt_insn_next(insndecoder, &insn, sizeof(insn));
 
         if (status < 0)
         {
@@ -386,13 +385,13 @@ int main(int argc, char** argv)
             break;
         }
 
-        // if (packet.type != ppt_pad)
-        //     print_payload(packet);
-        cout << insn.raw << endl;
+        if (packet.type != ppt_pad)
+            print_payload(packet);
+        // cout << insn.raw << endl;
     }
 
-    // pt_pkt_free_decoder(pktdecoder);
-    pt_insn_free_decoder(insndecoder);
+    pt_pkt_free_decoder(pktdecoder);
+    // pt_insn_free_decoder(insndecoder);
 
     return 0;
 }
