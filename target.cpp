@@ -13,23 +13,29 @@ int sum (int a, int b, int c)
 
 int main (int argc, char* argv [])
 {
+	// TODO
 	raise(SIGSTOP);
 	int a = 1;
-	int b = 2;
-	int c = 3;
 	int result = 0;
 	
-	result = sum(a, b, c);
+	//result = sum(a, a, a);
 	if (a % 2 == 0)
 	{
-		b++;
-		c++;
+		a++;
+	}
+	if (a % 2 == 0)
+	{
+		a++;
+	}
+	if (a % 2 == 0)
+	{
+		a++;
+	}
+	if (a % 2 == 0)
+	{
+		a++;
 	}
 	a++;
-	b++;
-	c++;
 		
-	//printf("%d + %d + %d = %d\n", a, b, c, result);
-
 	return 0;
 }

@@ -14,7 +14,8 @@
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 
-#include "/opt/libipt/libipt/include/intel-pt.h"
+#include "lib/intel-pt.h"
+#include "lib/load_elf.h"
 
 using namespace std;
 
@@ -31,22 +32,19 @@ void report_error(int err)
 
 void print_payload(pt_packet packet)
 {
-    char hex_str[18];
-
     switch (packet.type)
     {
         case ppt_cbr:
-            cout << "CBR: " << packet.payload.cbr.ratio << endl;
+            printf("CBR: %d\n", packet.payload.cbr.ratio);
             break;
         case ppt_cyc:
-            cout << "CYC: " << packet.payload.cyc.value << endl;
+            printf("CBR: %d\n", packet.payload.cbr.ratio);
             break;
         case ppt_exstop:
             cout << "EXSTOP!" << endl;
             break;
         case ppt_fup:
-            sprintf(hex_str, "0x%lX", packet.payload.ip.ip);
-            cout << "FUP: " << hex_str << endl;
+            printf("FUP: 0x%lX\n", packet.payload.ip.ip);
             break;
         case ppt_invalid:
             cout << "INVALID!" << endl;
@@ -79,7 +77,7 @@ void print_payload(pt_packet packet)
             cout << "PSBEND" << endl;
             break;
         case ppt_ptw:
-            cout << "PTW" << packet.payload.ptw.payload << endl;
+            cout << "PTW: " << packet.payload.ptw.payload << endl;
             break;
         case ppt_pwre:
             cout << "PWRE" << endl;
@@ -91,16 +89,13 @@ void print_payload(pt_packet packet)
             cout << "STOP" << endl;
             break;
         case ppt_tip:
-            sprintf(hex_str, "0x%lX", packet.payload.ip.ip);
-            cout << "TIP: " << hex_str << endl;
+            printf("TIP: 0x%lX\n", packet.payload.ip.ip);
             break;
         case ppt_tip_pgd:
-            sprintf(hex_str, "0x%lX", packet.payload.ip.ip);
-            cout << "TIP_PGD: " << hex_str << endl;
+            printf("TIP_PGD: 0x%lX\n", packet.payload.ip.ip);
             break;
         case ppt_tip_pge:
-            sprintf(hex_str, "0x%lX", packet.payload.ip.ip);
-            cout << "TIP_PGE: " << hex_str << endl;
+            printf("TIP_PGE: 0x%lX\n", packet.payload.ip.ip);
             break;
         case ppt_tma:
             cout << "TMA" << endl;
@@ -143,99 +138,12 @@ void end_child_process()
     }
 }
 
-void read_elf_file(char* filename, uint64_t* offset, uint64_t* size)
-{
-    char shname[64];
-    char sname[64];
-
-    FILE* file = fopen(filename, "rb");
-    Elf64_Ehdr header;
-    Elf64_Shdr sheader;
-    Elf64_Shdr strheader;
-
-    if(file)
-    {
-        // Read the header
-        fread(&header, 1, sizeof(header), file);
-
-        // Read the string table header
-        fseek(file, header.e_shoff + header.e_shstrndx * header.e_shentsize, SEEK_SET);
-        fread(&strheader, 1, sizeof(strheader), file);
-
-        for (int i = 0; i < header.e_shnum; i++)
-        {
-            fseek(file, header.e_shoff + i * header.e_shentsize, SEEK_SET);
-            fread(&sheader, 1, header.e_shentsize, file);
-
-            fseek(file, strheader.sh_offset + sheader.sh_name, SEEK_SET);
-            fread(sname, 1, 64, file);
-            
-            if (strcmp(sname, ".text") == 0)
-            {
-                *offset = sheader.sh_offset;
-                *size = sheader.sh_size;
-                break; // Assuming only one section
-            }
-        }
-
-        fclose(file);
-    }
-}
-
-void read_maps_file(char* filename, uint64_t* vaddr)
-{
-    string line;
-    ifstream file;
-
-    file.open(filename);
-
-    while (getline(file, line))
-    {
-        // Get access control flags
-        string acc = line.substr(line.find(" ")+1, 4);
-
-        if (acc.find("x") != -1)
-        {
-            int lspace = line.find_last_of(" ");
-            string label = line.substr(lspace+1, line.length()-lspace-1);
-
-            if (label.compare(TARGET_CMD) == 0)
-            {
-                string start = line.substr(0, line.find("-"));
-                stringstream sstart;
-                sstart << hex << start;
-                sstart >> *vaddr;
-                break; // Assuming only one section
-            }
-        }
-    }
-
-    file.close();
-}
-
-void add_image_file(pt_image* image)
-{
-    char exefilename[64], mapsfilename[64];
-    sprintf(exefilename, "/proc/%i/exe", TARGET_PID);
-    sprintf(mapsfilename, "/proc/%i/maps", TARGET_PID);
-
-    uint64_t offset, size, vaddr;
-
-    // Get offset (of .text in ELF?)
-    // Get size (of .text in ELF?)
-    read_elf_file(exefilename, &offset, &size);
-
-    // Get vaddr (of what?)
-    read_maps_file(mapsfilename, &vaddr);
-
-    pt_image_add_file(image, exefilename, offset, size, NULL, vaddr);
-}
-
 perf_event_mmap_page* alloc_pt_buf()
 {
     // Define event attribute object
     perf_event_attr attr;
 
+    printf("Allocating buffer for IPT...\n");
     memset(&attr, 0, sizeof(attr));
     attr.size = sizeof(attr);
     attr.exclude_kernel = 1;
@@ -263,7 +171,6 @@ perf_event_mmap_page* alloc_pt_buf()
     header->data_tail = header->data_head + header->data_size;
 
     printf("\tDATA:\t%p\n", (uint8_t *)header->data_head);
-
     header->aux_offset  = header->data_offset + header->data_size;
     header->aux_size    = AUX_SIZE * PAGE_SIZE;
 
@@ -285,77 +192,32 @@ perf_event_mmap_page* alloc_pt_buf()
     return header;
 }
 
-int main(int argc, char** argv)
+int handle_events(struct pt_insn_decoder *decoder, int status)
 {
-    // Arg 1: target PID
-    TARGET_CMD = argv[1];
-    char* const command[] = {TARGET_CMD, NULL};
-    TARGET_PID = fork();
-    
-    // Start target executable in new process
-    if (TARGET_PID == 0)
-    {
-        // TODO: Find out a way to do this from this side just after execve!
-        // Pause execution of child process pending decoder setup
-        //raise(SIGSTOP);
-        execve(TARGET_CMD, command, environ);
-        exit(0);
+    while (status & pts_event_pending) {
+        struct pt_event event;
+
+        status = pt_insn_event(decoder, &event, sizeof(event));
+        if (status < 0)
+            break;
+
+        // <process event>(&event);
     }
 
-    printf("Target: %i\n", TARGET_PID);
+    return status;
+}
 
-    // Allocate memory buffer for IPT
-    perf_event_mmap_page* header = alloc_pt_buf();
-
-    printf("Successfully allocated memory for IPT!\n");
-
-
-
-
-
-    // BEGIN DECODER INIT
-
-    struct pt_packet_decoder* pktdecoder;
-    // struct pt_insn_decoder* insndecoder;
-    struct pt_config config;
+int pktdecode(struct pt_packet_decoder *decoder)
+{
+    struct pt_packet packet;
+    pt_packet_type prevtype = ppt_unknown;
     int status;
-
-    memset(&config, 0, sizeof(config));
-    pt_config_init(&config);
-    // TODO: Find out if this is correct
-    config.begin = (uint8_t *)header->aux_head;
-    config.end = config.begin+header->aux_size;
-
-    pktdecoder = pt_pkt_alloc_decoder(&config);
-    // insndecoder = pt_insn_alloc_decoder(&config);
-    
-    if (!pktdecoder)
-    // if (!insndecoder)
-    {
-        printf("Failed to allocate decoder!\n");
-        end_child_process();
-        exit(EXIT_FAILURE);
-    }
-
-    // add_image_file(pt_insn_get_image(insndecoder));
-
-    printf("Successfully allocated decoder!\n");
-    
-
-
-
-
-    // BEGIN DECODER SYNCHRONIZATION
-
-    // Continue execution of target process
-    kill(TARGET_PID, SIGCONT);
 
     // Try synchronizing until something gets written in the buffer
     printf("Synchronizing...\n");
     do
     {
-        status = pt_pkt_sync_forward(pktdecoder);
-        // status = pt_insn_sync_forward(insndecoder);
+        status = pt_pkt_sync_forward(decoder);
     } while (status == -pte_eos);
 
     if (status < 0)
@@ -363,35 +225,163 @@ int main(int argc, char** argv)
         report_error(status);
     }
 
-
-
-
-
-    // BEGIN DECODING
-
-    printf("Successfully synchronized decoder!\n");
     printf("Decoding...\n");
+
     while (true)
     {
-        struct pt_packet packet;
-        // struct pt_insn insn;
-
-        status = pt_pkt_next(pktdecoder, &packet, sizeof(packet));
-        // status = pt_insn_next(insndecoder, &insn, sizeof(insn));
+        status = pt_pkt_next(decoder, &packet, sizeof(packet));
 
         if (status < 0)
         {
-            report_error(status);
             break;
         }
 
-        if (packet.type != ppt_pad)
+        if (packet.type != ppt_pad
+            && packet.type != ppt_fup
+            && packet.type != ppt_tip
+            && packet.type != ppt_tip_pgd
+            && packet.type != ppt_tip_pge
+            && packet.type != ppt_cbr)
+        {
             print_payload(packet);
-        // cout << insn.raw << endl;
+        }
+
+        prevtype = packet.type;
     }
 
+    report_error(status);
+
+    return status;
+}
+
+int insndecode(struct pt_insn_decoder *decoder)
+{
+    struct pt_insn insn;
+    int status;
+
+    // Try synchronizing until something gets written in the buffer
+    printf("Synchronizing...\n");
+    do
+    {
+        status = pt_insn_sync_forward(decoder);
+    } while (status == -pte_eos);
+
+    if (status < 0)
+    {
+        report_error(status);
+    }
+
+    printf("Decoding...\n");
+
+    while (true)
+    {
+
+        cout << "START" << endl;
+
+        status = handle_events(decoder, status);
+        if (status < 0)
+        {
+            break;
+        }
+
+        status = pt_insn_next(decoder, &insn, sizeof(insn));
+
+        if (insn.iclass != ptic_error)
+        {
+            cout << "INSN " << insn.ip << endl;
+        }
+        
+        if (status < 0)
+        {
+            break;
+        }
+    }
+
+    report_error(status);
+
+    return status;
+}
+
+int main(int argc, char** argv)
+{
+    // Arg 1: target PID
+    TARGET_CMD = argv[1];
+    char* const command[] = {TARGET_CMD, NULL};
+    TARGET_PID = fork();
+    
+    // Start target executable in child process
+    if (TARGET_PID == 0)
+    {
+        // TODO: Find out a way to do this from this side just after execve!
+        // Pause execution of child process pending decoder setup
+        // raise(SIGSTOP);
+        // Execute target
+        execve(TARGET_CMD, command, environ);
+        // If this command runs something has gone terribly wrong
+        exit(1);
+    }
+
+    printf("Target: %i\n", TARGET_PID);
+
+    // Allocate memory buffer for IPT
+    perf_event_mmap_page* header = alloc_pt_buf();
+
+
+    // ==BEGIN DECODER INIT==
+    struct pt_packet_decoder* pktdecoder;
+    struct pt_insn_decoder* insndecoder;
+    struct pt_config config;
+    int status;
+
+    printf("Allocating decoder...\n");
+
+    memset(&config, 0, sizeof(config));
+    pt_config_init(&config);
+    // TODO: Make sure this is correct
+    config.begin = (uint8_t *)header->aux_head;
+    config.end = config.begin+header->aux_size;
+
+    pktdecoder = pt_pkt_alloc_decoder(&config);
+    insndecoder = pt_insn_alloc_decoder(&config);
+    
+    if (!pktdecoder)
+    {
+        printf("Failed to allocate packet decoder!\n");
+        end_child_process();
+        exit(EXIT_FAILURE);
+    }
+
+    if (!insndecoder)
+    {
+        printf("Failed to allocate instruction decoder!\n");
+        end_child_process();
+        exit(EXIT_FAILURE);
+    }
+
+    // Load image from the target executable
+    char targetfile[64];
+    sprintf(targetfile, "/proc/%u/exe", TARGET_PID);
+    status = load_elf(NULL, pt_insn_get_image(insndecoder), targetfile, 0ull, "target", true);
+    
+    if (status < 0)
+    {
+        report_error(status);
+    }
+    
+
+    // ==BEGIN DECODING==
+
+    // Continue execution of target process
+    kill(TARGET_PID, SIGCONT);
+
+    pktdecode(pktdecoder);
+    // insndecode(insndecoder);
+
     pt_pkt_free_decoder(pktdecoder);
-    // pt_insn_free_decoder(insndecoder);
+    pt_insn_free_decoder(insndecoder);
+    
+    // Just in case
+    end_child_process();
 
     return 0;
 }
