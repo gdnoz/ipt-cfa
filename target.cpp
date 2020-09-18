@@ -1,8 +1,6 @@
-#include <iostream>
-#include <unistd.h>
+#include <cstdio>
+// #include <unistd.h>
 #include <signal.h>
-
-using namespace std;
 
 int sum (int a, int b, int c)
 {
@@ -13,29 +11,24 @@ int sum (int a, int b, int c)
 
 int main (int argc, char* argv [])
 {
-	// TODO
-	raise(SIGSTOP);
-	int a = 1;
+	printf("=== TARGET: Address of main() is %p ===\n", main);
+	// sleep(1);
+	// raise(SIGSTOP);
+	int a = 1, b;
 	int result = 0;
 	
-	//result = sum(a, a, a);
-	if (a % 2 == 0)
+	while (a < __INT_MAX__)
 	{
 		a++;
 	}
-	if (a % 2 == 0)
-	{
-		a++;
-	}
-	if (a % 2 == 0)
-	{
-		a++;
-	}
-	if (a % 2 == 0)
-	{
-		a++;
-	}
-	a++;
+	a = 1;
+	a = 1;
+	a = 1;
+	a = 1;
+	a = 1;
+	a = 1;
+	a = 1;
+	a = 1;
 		
 	return 0;
 }

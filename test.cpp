@@ -13,9 +13,14 @@
 #include <sys/user.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
+#include <intel-pt.h>
 
-#include "lib/intel-pt.h"
+// #include "lib/libipt-sb.h"
 #include "lib/load_elf.h"
+extern "C" {
+#include "ptxed_util.c"
+#include "xed/include/xed/xed-interface.h"
+}
 
 using namespace std;
 
@@ -30,93 +35,128 @@ void report_error(int err)
     printf("ERROR %d: %s\n", err, pt_errstr(pt_errcode(err)));
 }
 
-void print_payload(pt_packet packet)
+void print_pkt_payload(pt_packet packet)
 {
     switch (packet.type)
     {
-        case ppt_cbr:
-            printf("CBR: %d\n", packet.payload.cbr.ratio);
+        case ppt_cbr:       printf("CBR: %d\n", packet.payload.cbr.ratio);
             break;
-        case ppt_cyc:
-            printf("CBR: %d\n", packet.payload.cbr.ratio);
+        case ppt_cyc:       printf("CBR: %d\n", packet.payload.cbr.ratio);
             break;
-        case ppt_exstop:
-            cout << "EXSTOP!" << endl;
+        case ppt_exstop:    cout << "EXSTOP!" << endl;
             break;
-        case ppt_fup:
-            printf("FUP: 0x%lX\n", packet.payload.ip.ip);
+        case ppt_fup:       printf("FUP: 0x%lX\n", packet.payload.ip.ip);
             break;
-        case ppt_invalid:
-            cout << "INVALID!" << endl;
+        case ppt_invalid:   cout << "INVALID!" << endl;
             break;
-        case ppt_mnt:
-            cout << "MNT: " << endl; // TODO?
+        case ppt_mnt:       cout << "MNT: " << endl; // TODO?
             break;
-        case ppt_mode:
-            cout << "MODE" << endl; // TODO?
+        case ppt_mode:      cout << "MODE" << endl; // TODO?
             break;
-        case ppt_mtc:
-            cout << "MTC" << endl; // TODO?
+        case ppt_mtc:       cout << "MTC" << endl; // TODO?
             break;
-        case ppt_mwait:
-            cout << "MWAIT" << endl;
+        case ppt_mwait:     cout << "MWAIT" << endl;
             break;
-        case ppt_ovf:
-            cout << "OVERFLOW!" << endl;
+        case ppt_ovf:       cout << "OVERFLOW!" << endl;
             break;
-        case ppt_pad:
-            cout << "PAD" << endl;
+        case ppt_pad:       cout << "PAD" << endl;
             break;
-        case ppt_pip:
-            cout << "PIP: " << packet.payload.pip.cr3 << endl;
+        case ppt_pip:       cout << "PIP: " << packet.payload.pip.cr3 << endl;
             break;
-        case ppt_psb:
-            cout << "PSB" << endl;
+        case ppt_psb:       cout << "PSB" << endl;
             break;
-        case ppt_psbend:
-            cout << "PSBEND" << endl;
+        case ppt_psbend:    cout << "PSBEND" << endl;
             break;
-        case ppt_ptw:
-            cout << "PTW: " << packet.payload.ptw.payload << endl;
+        case ppt_ptw:       cout << "PTW: " << packet.payload.ptw.payload << endl;
             break;
-        case ppt_pwre:
-            cout << "PWRE" << endl;
+        case ppt_pwre:      cout << "PWRE" << endl;
             break;
-        case ppt_pwrx:
-            cout << "PWRX" << endl;
+        case ppt_pwrx:      cout << "PWRX" << endl;
             break;
-        case ppt_stop:
-            cout << "STOP" << endl;
+        case ppt_stop:      cout << "STOP" << endl;
             break;
-        case ppt_tip:
-            printf("TIP: 0x%lX\n", packet.payload.ip.ip);
+        case ppt_tip:       printf("TIP: 0x%lX\n", packet.payload.ip.ip);
             break;
-        case ppt_tip_pgd:
-            printf("TIP_PGD: 0x%lX\n", packet.payload.ip.ip);
+        case ppt_tip_pgd:   printf("TIP_PGD: 0x%lX\n", packet.payload.ip.ip);
             break;
-        case ppt_tip_pge:
-            printf("TIP_PGE: 0x%lX\n", packet.payload.ip.ip);
+        case ppt_tip_pge:   printf("TIP_PGE: 0x%lX\n", packet.payload.ip.ip);
             break;
-        case ppt_tma:
-            cout << "TMA" << endl;
+        case ppt_tma:       cout << "TMA" << endl;
             break;
-        case ppt_tnt_64:
-            cout << "TNT_64: " << bitset<64>(packet.payload.tnt.payload) << endl;
+        case ppt_tnt_64:    cout << "TNT_64: " << bitset<64>(packet.payload.tnt.payload) << endl;
             break;
-        case ppt_tnt_8:
-            cout << "TNT_8: " << bitset<8>(packet.payload.tnt.payload) << endl;
+        case ppt_tnt_8:     cout << "TNT_8: " << bitset<8>(packet.payload.tnt.payload) << endl;
             break;
-        case ppt_tsc:
-            cout << "TSC: " << packet.payload.tsc.tsc << endl;
+        case ppt_tsc:       cout << "TSC: " << packet.payload.tsc.tsc << endl;
             break;
-        case ppt_unknown:
-            cout << "UNKNOWN" << endl;
+        case ppt_unknown:   cout << "UNKNOWN" << endl;
             break;
-        case ppt_vmcs:
-            cout << "VMCS: " << packet.payload.vmcs.base << endl;
+        case ppt_vmcs:      cout << "VMCS: " << packet.payload.vmcs.base << endl;
             break;
-        default:
-            cout << "NO PACKET TYPE" << endl;
+        default:            cout << "NO PACKET TYPE" << endl;
+    }
+}
+
+string ptem_str(pt_exec_mode mode)
+{
+    switch (mode)
+    {
+        case ptem_16bit:    return "16bit";
+            break;
+        case ptem_32bit:    return "32bit";
+            break;
+        case ptem_64bit:    return "64bit";
+            break;
+    }
+    
+    return "UNKNOWN";
+}
+
+void print_event(pt_event event)
+{
+    switch (event.type)
+    {
+        case ptev_async_branch:     cout << "[ASYNC_BRANCH]" << endl;
+            break;
+        case ptev_async_disabled:   cout << "[ASYNC_DISABLED]" << endl;
+            break;
+        case ptev_async_paging:     cout << "[ASYNC_PAGING]" << endl;
+            break;
+        case ptev_async_vmcs:       cout << "[ASYNC_VMCS]" << endl;
+            break;
+        case ptev_cbr:              cout << "[CBR: " << event.variant.cbr.ratio << "]" << endl;
+            break;
+        case ptev_disabled:         cout << "[DISABLED]" << endl;
+            break;
+        case ptev_enabled:          cout << "[ENABLED]" << endl;
+            break;
+        case ptev_exec_mode:        cout << "[EXEC_MODE: " << ptem_str(event.variant.exec_mode.mode) << "]" << endl;
+            break;
+        case ptev_exstop:           cout << "[EXECSTOP]" << endl;
+            break;
+        case ptev_mnt:              cout << "[MNT]" << endl;
+            break;
+        case ptev_mwait:            cout << "[MWAIT]" << endl;
+            break;
+        case ptev_overflow:         cout << "[OVERFLOW]" << endl;
+            break;
+        case ptev_paging:           cout << "[PAGING]" << endl;
+            break;
+        case ptev_ptwrite:          cout << "[PTWRITE]" << endl;
+            break;
+        case ptev_pwre:             cout << "[PWRE]" << endl;
+            break;
+        case ptev_pwrx:             cout << "[PWRX]" << endl;
+            break;
+        case ptev_stop:             cout << "[STOP]" << endl;
+            break;
+        case ptev_tick:             cout << "[TICK]" << endl;
+            break;
+        case ptev_tsx:              cout << "[TSX]" << endl;
+            break;
+        case ptev_vmcs:             cout << "[VMCS]" << endl;
+            break;
+        default:                    cout << "[NO EVENT TYPE]" << endl;
     }
 }
 
@@ -192,21 +232,6 @@ perf_event_mmap_page* alloc_pt_buf()
     return header;
 }
 
-int handle_events(struct pt_insn_decoder *decoder, int status)
-{
-    while (status & pts_event_pending) {
-        struct pt_event event;
-
-        status = pt_insn_event(decoder, &event, sizeof(event));
-        if (status < 0)
-            break;
-
-        // <process event>(&event);
-    }
-
-    return status;
-}
-
 int pktdecode(struct pt_packet_decoder *decoder)
 {
     struct pt_packet packet;
@@ -243,13 +268,30 @@ int pktdecode(struct pt_packet_decoder *decoder)
             && packet.type != ppt_tip_pge
             && packet.type != ppt_cbr)
         {
-            print_payload(packet);
+            print_pkt_payload(packet);
         }
 
         prevtype = packet.type;
     }
 
     report_error(status);
+
+    return status;
+}
+
+int handle_events(struct pt_insn_decoder *decoder, int status)
+{
+    while (status & pts_event_pending) {
+        struct pt_event event;
+
+        status = pt_insn_event(decoder, &event, sizeof(event));
+        if (status < 0)
+        {
+            break;
+        }
+
+        print_event(event);
+    }
 
     return status;
 }
@@ -272,12 +314,8 @@ int insndecode(struct pt_insn_decoder *decoder)
     }
 
     printf("Decoding...\n");
-
     while (true)
     {
-
-        cout << "START" << endl;
-
         status = handle_events(decoder, status);
         if (status < 0)
         {
@@ -285,15 +323,14 @@ int insndecode(struct pt_insn_decoder *decoder)
         }
 
         status = pt_insn_next(decoder, &insn, sizeof(insn));
+        if (status < 0)
+        {
+            break;
+        }
 
         if (insn.iclass != ptic_error)
         {
             cout << "INSN " << insn.ip << endl;
-        }
-        
-        if (status < 0)
-        {
-            break;
         }
     }
 
@@ -362,7 +399,6 @@ int main(int argc, char** argv)
     char targetfile[64];
     sprintf(targetfile, "/proc/%u/exe", TARGET_PID);
     status = load_elf(NULL, pt_insn_get_image(insndecoder), targetfile, 0ull, "target", true);
-    
     if (status < 0)
     {
         report_error(status);
@@ -374,9 +410,10 @@ int main(int argc, char** argv)
     // Continue execution of target process
     kill(TARGET_PID, SIGCONT);
 
-    pktdecode(pktdecoder);
-    // insndecode(insndecoder);
+    // pktdecode(pktdecoder);
+    insndecode(insndecoder);
 
+    // De-allocate decoder
     pt_pkt_free_decoder(pktdecoder);
     pt_insn_free_decoder(insndecoder);
     
