@@ -57,8 +57,7 @@ struct pt_image;
  * Returns -pte_bad_config if @file can't be processed.
  * Returns -pte_nomem if not enough memory can be allocated.
  */
-extern int load_elf(struct pt_image_section_cache *iscache,
-		    struct pt_image *image, const char *file,
-		    uint64_t base, const char *prog, int verbose);
+extern int elf_load_offset(const char *name, uint64_t base, uint64_t *offset,
+		 const char *prog);
 
 #endif /* LOAD_ELF_H */

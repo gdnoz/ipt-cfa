@@ -1,5 +1,32 @@
+// #include <stdio.h>
+// #include <unistd.h>
+
+// static int listlibs()
+// {
+// 	int status;
+// 	char filename[32];
+//     FILE *file;
+// 	char line[256];
+
+// 	sprintf(filename, "/proc/%d/maps", getpid());
+
+// 	file = fopen(filename, "r");
+
+// 	while (fgets(line, sizeof(line), file) != NULL)
+// 	{
+// 		printf("%s", line);
+// 	}
+
+//     fclose(file);
+
+//     return 0;
+// }
+
 int main (int argc, char* argv [])
 {
+	// printf("TARGET: Going!\n");
+	// listlibs();
+
 	int a;
 
 	a = 0;
@@ -12,6 +39,8 @@ int main (int argc, char* argv [])
 	a = 7;
 	a = 8;
 	a = 9;
+
+	// printf("TARGET: Gone!\n");
 
 	return 0;
 }

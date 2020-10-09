@@ -36,31 +36,11 @@
 #include <string.h>
 #include <limits.h>
 
-static int load_section(struct pt_image_section_cache *iscache,
-			struct pt_image *image, const char *name,
-			uint64_t offset, uint64_t size, uint64_t vaddr)
-{
-	if (!iscache)
-		return pt_image_add_file(image, name, offset, size, NULL,
-					 vaddr);
-	else {
-		int isid;
-
-		isid = pt_iscache_add_file(iscache, name, offset, size, vaddr);
-		if (isid < 0)
-			return isid;
-
-		return pt_image_add_cached(image, iscache, isid, NULL);
-	}
-}
-
-static int load_elf32(struct pt_image_section_cache *iscache,
-		      struct pt_image *image, FILE *file, uint64_t base,
-		      const char *name, const char *prog, int verbose)
+static int elf_load_offset32(FILE *file, uint64_t base, uint64_t *offset,
+		      const char *name, const char *prog)
 {
 	Elf32_Ehdr ehdr;
 	Elf32_Half pidx;
-	uint64_t offset;
 	size_t count;
 	int errcode, sections;
 
@@ -90,7 +70,7 @@ static int load_elf32(struct pt_image_section_cache *iscache,
 
 	/* Determine the load offset. */
 	if (!base)
-		offset = 0;
+		*offset = 0;
 	else {
 		uint64_t minaddr;
 
@@ -108,76 +88,24 @@ static int load_elf32(struct pt_image_section_cache *iscache,
 				return -pte_bad_config;
 			}
 
-			if (phdr.p_type != PT_LOAD)
+			if (phdr.p_type != PT_LOAD || !(phdr.p_flags & PF_X))
 				continue;
 
 			if (phdr.p_vaddr < minaddr)
 				minaddr = phdr.p_vaddr;
 		}
 
-		offset = base - minaddr;
+		*offset = base - minaddr;
 	}
-
-	errcode = fseek(file, (long) ehdr.e_phoff, SEEK_SET);
-	if (errcode) {
-		fprintf(stderr,
-			"%s: warning: %s error seeking program header: %s.\n",
-			prog, name, strerror(errno));
-		return -pte_bad_config;
-	}
-
-	for (sections = 0, pidx = 0; pidx < ehdr.e_phnum; ++pidx) {
-		Elf32_Phdr phdr;
-
-		count = fread(&phdr, sizeof(phdr), 1, file);
-		if (count != 1) {
-			fprintf(stderr,
-				"%s: warning: %s error reading phdr %u: %s.\n",
-				prog, name, pidx, strerror(errno));
-			return -pte_bad_config;
-		}
-
-		if (phdr.p_type != PT_LOAD)
-			continue;
-
-		if (!phdr.p_filesz)
-			continue;
-
-		errcode = load_section(iscache, image, name, phdr.p_offset,
-				       phdr.p_filesz, phdr.p_vaddr + offset);
-		if (errcode < 0) {
-			fprintf(stderr, "%s: warning: %s: failed to create "
-				"section for phdr %u: %s.\n", prog, name, pidx,
-				pt_errstr(pt_errcode(errcode)));
-			continue;
-		}
-
-		sections += 1;
-
-		if (verbose) {
-			printf("%s:", name);
-			printf(" offset=0x%" PRIx32, phdr.p_offset);
-			printf(" size=0x%" PRIx32, phdr.p_filesz);
-			printf(" vaddr=0x%" PRIx32, phdr.p_vaddr);
-			printf(".\n");
-		}
-	}
-
-	if (!sections)
-		fprintf(stderr,
-			"%s: warning: %s: did not find any load sections.\n",
-			prog,  name);
 
 	return 0;
 }
 
-static int load_elf64(struct pt_image_section_cache *iscache,
-		      struct pt_image *image, FILE *file, uint64_t base,
-		      const char *name, const char *prog, int verbose)
+static int elf_load_offset64(FILE *file, uint64_t base, uint64_t *offset,
+		      const char *name, const char *prog)
 {
 	Elf64_Ehdr ehdr;
 	Elf64_Half pidx;
-	uint64_t offset;
 	size_t count;
 	int errcode, sections;
 
@@ -213,7 +141,7 @@ static int load_elf64(struct pt_image_section_cache *iscache,
 
 	/* Determine the load offset. */
 	if (!base)
-		offset = 0;
+		*offset = 0;
 	else {
 		uint64_t minaddr;
 
@@ -231,79 +159,26 @@ static int load_elf64(struct pt_image_section_cache *iscache,
 				return -pte_bad_config;
 			}
 
-			if (phdr.p_type != PT_LOAD)
+			if (phdr.p_type != PT_LOAD || !(phdr.p_flags & PF_X))
 				continue;
 
 			if (phdr.p_vaddr < minaddr)
 				minaddr = phdr.p_vaddr;
+
 		}
 
-		offset = base - minaddr;
+		*offset = base - minaddr;
 	}
-
-	errcode = fseek(file, (long) ehdr.e_phoff, SEEK_SET);
-	if (errcode) {
-		fprintf(stderr,
-			"%s: warning: %s error seeking program header: %s.\n",
-			prog, name, strerror(errno));
-		return -pte_bad_config;
-	}
-
-	for (sections = 0, pidx = 0; pidx < ehdr.e_phnum; ++pidx) {
-		Elf64_Phdr phdr;
-
-		count = fread(&phdr, sizeof(phdr), 1, file);
-		if (count != 1) {
-			fprintf(stderr,
-				"%s: warning: %s error reading phdr %u: %s.\n",
-				prog, name, pidx, strerror(errno));
-			return -pte_bad_config;
-		}
-
-		if (phdr.p_type != PT_LOAD)
-			continue;
-
-		if (!phdr.p_filesz)
-			continue;
-
-		errcode = load_section(iscache, image, name, phdr.p_offset,
-				       phdr.p_filesz, phdr.p_vaddr + offset);
-		if (errcode < 0) {
-			fprintf(stderr, "%s: warning: %s: failed to create "
-				"section for phdr %u: %s.\n", prog, name, pidx,
-				pt_errstr(pt_errcode(errcode)));
-			continue;
-		}
-
-		sections += 1;
-
-		if (verbose) {
-			printf("%s:", name);
-			printf(" offset=0x%" PRIx64, phdr.p_offset);
-			printf(" size=0x%" PRIx64, phdr.p_filesz);
-			printf(" vaddr=0x%" PRIx64, phdr.p_vaddr);
-			printf(".\n");
-		}
-	}
-
-	if (!sections)
-		fprintf(stderr,
-			"%s: warning: %s: did not find any load sections.\n",
-			prog,  name);
 
 	return 0;
 }
 
-int load_elf(struct pt_image_section_cache *iscache, struct pt_image *image,
-	     const char *name, uint64_t base, const char *prog, int verbose)
+int elf_load_offset(const char *name, uint64_t base, uint64_t *offset, const char *prog)
 {
 	uint8_t e_ident[EI_NIDENT];
 	FILE *file;
 	size_t count;
 	int errcode, idx;
-
-	if (!image || !name)
-		return -pte_invalid;
 
 	file = fopen(name, "rb");
 	if (!file) {
@@ -341,13 +216,11 @@ int load_elf(struct pt_image_section_cache *iscache, struct pt_image *image,
 		break;
 
 	case ELFCLASS32:
-		errcode = load_elf32(iscache, image, file, base, name, prog,
-				     verbose);
+		errcode = elf_load_offset32(file, base, offset, name, prog);
 		break;
 
 	case ELFCLASS64:
-		errcode = load_elf64(iscache, image, file, base, name, prog,
-				     verbose);
+		errcode = elf_load_offset64(file, base, offset, name, prog);
 		break;
 	}
 

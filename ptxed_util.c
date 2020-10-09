@@ -1230,6 +1230,7 @@ static void print_block(struct ptxed_decoder *decoder,
 		xed_error_enum_t xederrcode;
 		int errcode;
 
+		// GM
 		if (options->print_offset)
 			printf("%016" PRIx64 "  ", offset);
 
@@ -1239,7 +1240,6 @@ static void print_block(struct ptxed_decoder *decoder,
 		if (block->speculative)
 			printf("? ");
 
-		// GM
 		printf("%016" PRIx64, ip);
 
 		errcode = block_fetch_insn(&insn, block, ip, decoder->iscache);
@@ -1260,10 +1260,10 @@ static void print_block(struct ptxed_decoder *decoder,
 			break;
 		}
 
+		// GM
 		if (!options->dont_print_insn)
 			xed_print_insn(&inst, insn.ip, options);
 
-		// GM
 		printf("\n");
 
 		ninsn -= 1;
@@ -1375,14 +1375,17 @@ static void decode_block(struct ptxed_decoder *decoder,
 		/* Initialize IP and ninsn - we use it for error reporting. */
 		block.ip = 0ull;
 		block.ninsn = 0u;
-
+		
 		status = pt_blk_sync_forward(ptdec);
 		if (status < 0) {
 			uint64_t new_sync;
 			int errcode;
 
 			if (status == -pte_eos)
+			{
+				printf("[end of trace]\n");
 				break;
+			}
 
 			diagnose_block(decoder, "sync error", status, &block);
 
@@ -1503,4 +1506,27 @@ static void print_stats(struct ptxed_stats *stats)
 
 	if (stats->flags & ptxed_stat_blocks)
 		printf("blocks:\t%" PRIu64 ".\n", stats->blocks);
+}
+
+static int load_raw(struct pt_image_section_cache *iscache,
+		    struct pt_image *image, char *filename, uint64_t base,
+			const char *prog)
+{
+	int isid, errcode;
+
+	isid = pt_iscache_add_file(iscache, filename, 0, UINT64_MAX, base);
+	if (isid < 0) {
+		fprintf(stderr, "%s: failed to add %s at 0x%" PRIx64 ": %s.\n",
+			prog, filename, base, pt_errstr(pt_errcode(isid)));
+		return -1;
+	}
+
+	errcode = pt_image_add_cached(image, iscache, isid, NULL);
+	if (errcode < 0) {
+		fprintf(stderr, "%s: failed to add %s at 0x%" PRIx64 ": %s.\n",
+			prog, filename, base, pt_errstr(pt_errcode(errcode)));
+		return -1;
+	}
+
+	return 0;
 }
