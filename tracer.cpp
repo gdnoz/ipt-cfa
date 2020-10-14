@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <syscall.h>
+#include <dirent.h>
 #include <sys/mman.h>
 #include <linux/perf_event.h>
 #include <sys/user.h>
@@ -20,18 +21,6 @@ extern "C" {
 #include "ptxed_util.c"
 #include "lib/xed-interface.h"
 }
-
-/*
-# This is the golden standard:
-sudo perf record -e intel_pt//u -T --switch-events \
-    -- /home/gmatt/ipt-cfa/bin/target
-    
-ptxed \
-    --raw /home/gmatt/ipt-cfa/bin/target:0x55974662c000 \
-    --raw /usr/lib/x86_64-linux-gnu/ld-2.31.so:0x7f068b14d000 \
-    --raw /usr/lib/x86_64-linux-gnu/libc-2.31.so:0x7f068af3d000 \
-    --raw-insn --event:tick --pt perf.data
-*/
 
 using namespace std;
 
@@ -53,29 +42,11 @@ void report_error(int err)
     printf("ERROR %d: %s\n", err, pt_errstr(pt_errcode(err)));
 }
 
-// TODO: TEMP!!!
-bool contains(vector<gm_file_link> *list, gm_file_link *obj)
+static int get_linked_files(vector<gm_file_link> *links, bool save)
 {
-    for (int i = 0; i < list->size(); i++)
-    {
-        gm_file_link *cur = &((*list)[i]);
-
-        // Only need to compare the filename
-        if (cur->filename.compare(obj->filename) == 0)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static void get_linked_files(vector<gm_file_link> *links)
-{
-	int status;
-	char *filename = new char[32];
+	int status, cnt = 0;
     string line;
-
+	char *filename = new char[32];
     // Parse the maps file of target process
 	sprintf(filename, "/proc/%d/maps", TARGET_PID);
 
@@ -125,17 +96,108 @@ static void get_linked_files(vector<gm_file_link> *links)
                 gm_file_link link;
                 link.filename = target;
                 link.base = offset;
+                cnt++;
 
-                // TODO: TEMP!!!
-                if (contains(links, &link))
-                    continue;
-
-                links->push_back(link);
+                if (save)
+                {
+                    links->push_back(link);
+                }
             }
         }
     }
 
     mapsfile.close();
+
+    return cnt;
+}
+
+char *trim_str(char *str)
+{
+    char *end;
+
+    // Trim leading space
+    while(isspace((unsigned char)*str)) str++;
+
+    if(*str == 0)  // All spaces?
+    return str;
+
+    // Trim trailing space
+    end = str + strlen(str) - 1;
+    while(end > str && isspace((unsigned char)*end)) end--;
+
+    // Write new null terminator character
+    end[1] = '\0';
+
+    return str;
+}
+
+// TODO: Fix this!
+int libcount()
+{
+    string data;
+    FILE * stream;
+    const int max_buffer = 256;
+    char buffer[max_buffer];
+    char cmd[max_buffer];
+    int cnt = 0;
+
+    sprintf(cmd, "ldd %s 2>&1",TARGET_CMD);
+
+    stream = popen(cmd, "r");
+    if (stream) {
+        while (!feof(stream))
+        {
+            if (fgets(buffer, max_buffer, stream) != NULL)
+            {
+                char *line = trim_str(buffer);
+                
+                if (strlen(line) <= 0)
+                {
+                    continue;
+                }
+
+                if (line[0] == '/')
+                {
+                    cnt++;
+                }
+                else
+                {
+                    strtok(line, " => ");
+                    strtok(NULL, " ");
+                    char *token = strtok(NULL, " ");
+
+                    if (token != NULL && token[0] == '/')
+                    {
+                        cnt++;
+                    }
+                }
+            }
+        }
+        pclose(stream);
+    }
+
+    // Add one for the base executable
+    return cnt+1;
+}
+
+void monitor_maps(void *arg)
+{
+    vector<struct gm_file_link> *links = (vector<struct gm_file_link> *)arg;
+    // Determine the expected number of linked libraries
+    int mapcnt, libcnt = libcount();
+
+    // While the actual number of linked libraries is
+    // less than the expected number, keep checking
+    do
+    {
+        // Step child process one block ahead
+        ptrace(PTRACE_SINGLEBLOCK, TARGET_PID);
+        // Check current number of mapped libraries
+        mapcnt = get_linked_files(links, false);
+    } while (mapcnt < libcnt);
+
+    // Load the linked libraries
+    get_linked_files(links, true);
 }
 
 static int load_image(
@@ -146,17 +208,18 @@ static int load_image(
 {
     int status;
 
+    printf("Loading linked libraries into decoder image...\n");
+
     for (int i = 0; i < links->size(); i++)
     {
         gm_file_link *cur = &((*links)[i]);
 
-        // printf("%s: base=0x%lx\n", cur->filename.c_str(), cur->base);
-
         // Load the appropriate file
         int len = cur->filename.size()+1;
         char *cfilename = new char[len];
-        strncpy(cfilename, cur->filename.c_str(), len);
-        printf("%s\n", cfilename);
+        strcpy(cfilename, cur->filename.c_str());
+        printf("+   %s: base=0x%lx\n", cur->filename.c_str(), cur->base);
+
         status = load_raw(decoder->iscache, image, cfilename, cur->base, prog);
     }
 
@@ -208,13 +271,14 @@ perf_event_mmap_page* alloc_pt_buf()
     header->aux_head = (uint64_t)aux;
     header->aux_tail = header->aux_head + header->aux_size;
 
-    printf("AUX: 0x%llx-0x%llx (%llu bytes)\n", header->aux_head, header->aux_tail, header->aux_size);
+    // printf("AUX: 0x%llx-0x%llx (%llu bytes)\n", header->aux_head, header->aux_tail, header->aux_size);
 
     return header;
 }
 
 int main(int argc, char** argv)
 {
+    pthread_t listener;
     vector<struct gm_file_link> links;
 
     // Arg 1: target PID
@@ -225,7 +289,6 @@ int main(int argc, char** argv)
     // Start target executable in child process
     if (TARGET_PID == 0)
     {
-        printf("TARGET: Forked!\n");
         // Pause execution of child process on exec pending decoder setup
         ptrace(PTRACE_TRACEME, 0, 0, 0);
         // Execute target
@@ -242,14 +305,14 @@ int main(int argc, char** argv)
 
     if (WIFSTOPPED(childstatus) && WSTOPSIG(childstatus) == SIGTRAP)
     {
-        // Get target's linked libraries
-        get_linked_files(&links);
         // Allocate memory buffer for IPT
         header = alloc_pt_buf();
+        // Wait for the list of linked libraries to become fully populated
+        monitor_maps(&links);
         // Tell child process to proceed
         ptrace(PTRACE_CONT, TARGET_PID);
+        // Enable Intel PT recording
         syscall(SYS_ioctl, FD, PERF_EVENT_IOC_ENABLE);
-        printf("TRACER: Go target!\n");
     }
 
 	struct ptxed_decoder decoder;
@@ -281,14 +344,9 @@ int main(int argc, char** argv)
 	}
 
     // options.quiet = 1;
-    // options.print_stats = 1;
+    options.print_stats = 1;
     options.print_raw_insn = 1;
 
-    // TODO: Shitmix to capture dynamic linking of libc!!!
-    for (int i = 0; i < 3; i++)
-    {
-        get_linked_files(&links);
-    }
     // Load linked libraries into decoder image
     errcode = load_image(&links, &decoder, image, TARGET_CMD);
     if (errcode < 0)
@@ -330,12 +388,6 @@ int main(int argc, char** argv)
     // Clean up
     syscall(SYS_ioctl, FD, PERF_EVENT_IOC_DISABLE);
     close(FD);
-
-    // TODO
-    // for (int i = 0; i < links.size(); i++)
-    // {
-    //     cout << links[i].filename << ": 0x" << hex << links[i].base << endl;
-    // }
 
 	if (options.print_stats)
 		print_stats(&stats);
