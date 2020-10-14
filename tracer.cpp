@@ -42,6 +42,12 @@ void report_error(int err)
     printf("ERROR %d: %s\n", err, pt_errstr(pt_errcode(err)));
 }
 
+/**
+ * This function parses the maps file for the target process
+ * and returns the number of mapped executable file sections.
+ * If save is set to a non-zero value, it also stores each
+ * section's file name and base address in a vector.
+*/
 static int get_linked_files(vector<gm_file_link> *links, bool save)
 {
 	int status, cnt = 0;
@@ -50,12 +56,13 @@ static int get_linked_files(vector<gm_file_link> *links, bool save)
     // Parse the maps file of target process
 	sprintf(filename, "/proc/%d/maps", TARGET_PID);
 
+    // Open file stream on maps filename
 	ifstream mapsfile(filename);
 
     while (getline(mapsfile, line))
     {
         int lsplit, rlen;
-        unsigned long startaddr, endaddr;
+        unsigned long startaddr;//, endaddr;
         string acc, target;
         stringstream ss;
 
@@ -69,9 +76,9 @@ static int get_linked_files(vector<gm_file_link> *links, bool save)
         // Get end address of section
         lsplit = lsplit+rlen+1;
         rlen = line.find(' ', lsplit+1)-lsplit;
-        ss.clear();
-        ss << hex << line.substr(lsplit, rlen);
-        ss >> endaddr;
+        // ss.clear();
+        // ss << hex << line.substr(lsplit, rlen);
+        // ss >> endaddr;
 
         // Get access control flags
         lsplit = lsplit+rlen+1;
@@ -131,7 +138,6 @@ char *trim_str(char *str)
     return str;
 }
 
-// TODO: Fix this!
 int libcount()
 {
     string data;

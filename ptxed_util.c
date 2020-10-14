@@ -1218,10 +1218,10 @@ static void print_block(struct ptxed_decoder *decoder,
 		return;
 
 	// GM
-	// printf("BLOCK: 0x%lx -> 0x%lx (%d insns)\n",
-	// 		block->ip,
-	// 		block->end_ip,
-	// 		block->ninsn);
+	printf("BLOCK: 0x%lx -> 0x%lx (%d insns)\n",
+			block->ip,
+			block->end_ip,
+			block->ninsn);
 
 	ip = block->ip;
 	for (;;) {
@@ -1231,16 +1231,16 @@ static void print_block(struct ptxed_decoder *decoder,
 		int errcode;
 
 		// GM
-		if (options->print_offset)
-			printf("%016" PRIx64 "  ", offset);
+		// if (options->print_offset)
+		// 	printf("%016" PRIx64 "  ", offset);
 
-		if (options->print_time)
-			printf("%016" PRIx64 "  ", time);
+		// if (options->print_time)
+		// 	printf("%016" PRIx64 "  ", time);
 
-		if (block->speculative)
-			printf("? ");
+		// if (block->speculative)
+		// 	printf("? ");
 
-		printf("%016" PRIx64, ip);
+		// printf("%016" PRIx64, ip);
 
 		errcode = block_fetch_insn(&insn, block, ip, decoder->iscache);
 		if (errcode < 0) {
@@ -1261,10 +1261,10 @@ static void print_block(struct ptxed_decoder *decoder,
 		}
 
 		// GM
-		if (!options->dont_print_insn)
-			xed_print_insn(&inst, insn.ip, options);
+		// if (!options->dont_print_insn)
+		// 	xed_print_insn(&inst, insn.ip, options);
 
-		printf("\n");
+		// printf("\n");
 
 		ninsn -= 1;
 		if (!ninsn)
