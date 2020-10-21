@@ -28,7 +28,8 @@ int FD;
 char* TARGET_CMD;
 pid_t TARGET_PID;
 
-const int DATA_SIZE = 4096;
+// The DATA region is not used in this application
+const int DATA_SIZE = 0;
 const int AUX_SIZE = 4096;
 
 struct gm_file_link
@@ -47,7 +48,7 @@ void report_error(int err)
  * and returns the number of mapped executable file sections.
  * If save is set to a non-zero value, it also stores each
  * section's file name and base address in a vector.
-*/
+ */
 static int get_linked_files(vector<gm_file_link> *links, bool save)
 {
 	int status, cnt = 0;
@@ -62,7 +63,7 @@ static int get_linked_files(vector<gm_file_link> *links, bool save)
     while (getline(mapsfile, line))
     {
         int lsplit, rlen;
-        unsigned long startaddr;//, endaddr;
+        unsigned long startaddr;
         string acc, target;
         stringstream ss;
 
@@ -76,9 +77,6 @@ static int get_linked_files(vector<gm_file_link> *links, bool save)
         // Get end address of section
         lsplit = lsplit+rlen+1;
         rlen = line.find(' ', lsplit+1)-lsplit;
-        // ss.clear();
-        // ss << hex << line.substr(lsplit, rlen);
-        // ss >> endaddr;
 
         // Get access control flags
         lsplit = lsplit+rlen+1;
@@ -105,6 +103,7 @@ static int get_linked_files(vector<gm_file_link> *links, bool save)
                 link.base = offset;
                 cnt++;
 
+                // Only save the results if parameter is set
                 if (save)
                 {
                     links->push_back(link);
@@ -118,26 +117,26 @@ static int get_linked_files(vector<gm_file_link> *links, bool save)
     return cnt;
 }
 
+/**
+ * This function trims leading whitespace from a string
+ */
 char *trim_str(char *str)
 {
-    char *end;
-
-    // Trim leading space
-    while(isspace((unsigned char)*str)) str++;
-
-    if(*str == 0)  // All spaces?
-    return str;
-
-    // Trim trailing space
-    end = str + strlen(str) - 1;
-    while(end > str && isspace((unsigned char)*end)) end--;
-
-    // Write new null terminator character
-    end[1] = '\0';
+    // Keep iterating the string pointer untilit points to a
+    // non-whitespace character (possibly the null terminator)
+    while(isspace(str[0]))
+    {
+        str++;
+    }
 
     return str;
 }
 
+/**
+ * This function uses the ldd command line tool to
+ * count the expected number of loaded runtime
+ * libraries for the target executable.
+ */
 int libcount()
 {
     string data;
@@ -147,31 +146,33 @@ int libcount()
     char cmd[max_buffer];
     int cnt = 0;
 
+    // run ldd and capture output as FILE
     sprintf(cmd, "ldd %s 2>&1",TARGET_CMD);
-
     stream = popen(cmd, "r");
-    if (stream) {
+
+    if (stream)
+    {
         while (!feof(stream))
         {
             if (fgets(buffer, max_buffer, stream) != NULL)
             {
+                // Trim leading whitespace from line
                 char *line = trim_str(buffer);
                 
-                if (strlen(line) <= 0)
-                {
-                    continue;
-                }
-
+                // Count all literal file paths
                 if (line[0] == '/')
                 {
                     cnt++;
                 }
+                // Count all symbolic links to file paths
                 else
                 {
+                    // Identify the target of the symbolic link
                     strtok(line, " => ");
                     strtok(NULL, " ");
                     char *token = strtok(NULL, " ");
 
+                    // Check whether target is literal file path
                     if (token != NULL && token[0] == '/')
                     {
                         cnt++;
@@ -179,6 +180,8 @@ int libcount()
                 }
             }
         }
+
+        // Close FILE
         pclose(stream);
     }
 
@@ -186,9 +189,15 @@ int libcount()
     return cnt+1;
 }
 
+/**
+ * This function steps through the target process
+ * block-by-block until it has mapped the expected
+ * number of external libraries and stores the list.
+ */
 void monitor_maps(void *arg)
 {
     vector<struct gm_file_link> *links = (vector<struct gm_file_link> *)arg;
+
     // Determine the expected number of linked libraries
     int mapcnt, libcnt = libcount();
 
@@ -196,8 +205,9 @@ void monitor_maps(void *arg)
     // less than the expected number, keep checking
     do
     {
-        // Step child process one block ahead
+        // Step child process one block forward
         ptrace(PTRACE_SINGLEBLOCK, TARGET_PID);
+
         // Check current number of mapped libraries
         mapcnt = get_linked_files(links, false);
     } while (mapcnt < libcnt);
@@ -206,6 +216,10 @@ void monitor_maps(void *arg)
     get_linked_files(links, true);
 }
 
+/**
+ * This function takes the stored list of mapped libraries
+ * and loads them into the decoder.
+ */
 static int load_image(
          vector<gm_file_link> *links,
          ptxed_decoder *decoder,
@@ -216,22 +230,28 @@ static int load_image(
 
     printf("Loading linked libraries into decoder image...\n");
 
+    // Loop through the saved linked libraries
     for (int i = 0; i < links->size(); i++)
     {
         gm_file_link *cur = &((*links)[i]);
 
-        // Load the appropriate file
         int len = cur->filename.size()+1;
         char *cfilename = new char[len];
         strcpy(cfilename, cur->filename.c_str());
         printf("+   %s: base=0x%lx\n", cur->filename.c_str(), cur->base);
 
+        // Load the file at the appropriate offset
         status = load_raw(decoder->iscache, image, cfilename, cur->base, prog);
     }
 
 	return status;
 }
 
+/**
+ * This function obtains a PERF event file descriptor,
+ * allocates and maps the memory buffer for Intel PT
+ * to write its output for the target process.
+ */
 perf_event_mmap_page* alloc_pt_buf()
 {
     struct perf_event_attr attr;
@@ -255,6 +275,7 @@ perf_event_mmap_page* alloc_pt_buf()
     struct perf_event_mmap_page *header;
     void *base, *data, *aux;
 
+    // Map DATA region to memory and assign the base pointer
     base = mmap(NULL, (1+DATA_SIZE) * PAGE_SIZE, PROT_WRITE, MAP_SHARED, FD, 0);
     if (base == MAP_FAILED)
     {
@@ -264,9 +285,15 @@ perf_event_mmap_page* alloc_pt_buf()
 
     header = (perf_event_mmap_page *)base;
     data = (uint8_t *)base + header->data_offset;
+    header->data_head = (uint64_t)data;
+    header->data_tail = header->data_head + header->data_size;
     header->aux_offset = header->data_offset + header->data_size;
     header->aux_size = AUX_SIZE * PAGE_SIZE;
     
+    printf("+   DATA: 0x%llx-0x%llx (%llu bytes)\n",
+            header->data_head, header->data_tail, header->data_size);
+            
+    // Map AUX region to memory
     aux = mmap(NULL, header->aux_size, PROT_READ, MAP_SHARED, FD, header->aux_offset);
     if (aux == MAP_FAILED)
     {
@@ -277,7 +304,8 @@ perf_event_mmap_page* alloc_pt_buf()
     header->aux_head = (uint64_t)aux;
     header->aux_tail = header->aux_head + header->aux_size;
 
-    // printf("AUX: 0x%llx-0x%llx (%llu bytes)\n", header->aux_head, header->aux_tail, header->aux_size);
+    printf("+   AUX: 0x%llx-0x%llx (%llu bytes)\n",
+            header->aux_head, header->aux_tail, header->aux_size);
 
     return header;
 }
@@ -287,9 +315,11 @@ int main(int argc, char** argv)
     pthread_t listener;
     vector<struct gm_file_link> links;
 
-    // Arg 1: target PID
+    // Arg 1: target command
     TARGET_CMD = argv[1];
     char* const command[] = {TARGET_CMD, NULL};
+
+    // Fork a new child process to run the target executable
     TARGET_PID = fork();
 
     // Start target executable in child process
@@ -302,13 +332,14 @@ int main(int argc, char** argv)
         // If this command runs something has gone terribly wrong
         exit(1);
     }
-    
-    printf("Target PID: %i\n", TARGET_PID);
 
     struct perf_event_mmap_page* header;
     int	childstatus;
+
+    // Make sure the target is stopped before proceeding
     waitpid(TARGET_PID, &childstatus, 0);
 
+    // If everything went right, the target process should have hit a breakpoint
     if (WIFSTOPPED(childstatus) && WSTOPSIG(childstatus) == SIGTRAP)
     {
         // Allocate memory buffer for IPT
@@ -328,11 +359,11 @@ int main(int argc, char** argv)
 	struct pt_image *image;
 	int errcode;
 
-    image = NULL;
-
+    // Default decoder options and stats to 0
     memset(&options, 0, sizeof(options));
 	memset(&stats, 0, sizeof(stats));
 
+    // Initialize decoder
 	errcode = ptxed_init_decoder(&decoder);
 	if (errcode < 0)
     {
@@ -340,8 +371,7 @@ int main(int argc, char** argv)
         exit(1);
 	}
 
-    pt_sb_notify_error(decoder.session, ptxed_print_error, &options);
-
+    // Allocate traced memory image
 	image = pt_image_alloc(NULL);
 	if (!image)
     {
@@ -349,6 +379,7 @@ int main(int argc, char** argv)
         exit(1);
 	}
 
+    // Set decoder options
     // options.quiet = 1;
     options.print_stats = 1;
     options.print_raw_insn = 1;
@@ -361,10 +392,12 @@ int main(int argc, char** argv)
         exit(1);
     }
 
+    // Set up decoder configuration to use the allocated PT buffer
 	pt_config_init(&config);
     config.begin = (uint8_t *)header->aux_head;
     config.end = (uint8_t *)header->aux_tail;
 
+    // Allocate the decoder using the specified options and config
     alloc_decoder(&decoder, &config, image, &options, TARGET_CMD);
 	if (!ptxed_have_decoder(&decoder))
     {
@@ -372,22 +405,20 @@ int main(int argc, char** argv)
 		exit(1);
 	}
 
+    // Initialize Intel XED tables for instruction decoding
     xed_tables_init();
 
-	if (options.print_stats && !stats.flags) {
+    // Set stats flags from options
+	if (options.print_stats && !stats.flags)
+    {
 		stats.flags |= ptxed_stat_insn;
 
 		if (decoder.type == pdt_block_decoder)
+        {
 			stats.flags |= ptxed_stat_blocks;
+        }
 	}
 
-	errcode = pt_sb_init_decoders(decoder.session);
-	if (errcode < 0)
-    {
-		report_error(errcode);
-        exit(1);
-	}
-    
     // Start decoding
 	decode(&decoder, &options, &stats);
 
@@ -396,7 +427,9 @@ int main(int argc, char** argv)
     close(FD);
 
 	if (options.print_stats)
+    {
 		print_stats(&stats);
+    }
 
     return 0;
 }

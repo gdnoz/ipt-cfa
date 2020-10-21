@@ -1,7 +1,6 @@
 #include <inttypes.h>
 #include <intel-pt.h>
 
-#include "lib/libipt-sb.h"
 #include "lib/xed-interface.h"
 
 enum ptxed_decoder_type {
@@ -43,19 +42,10 @@ struct ptxed_decoder {
 
 	/* The image section cache. */
 	struct pt_image_section_cache *iscache;
-
-	/* The sideband session. */
-	struct pt_sb_session *session;
-
-	/* The perf event sideband decoder configuration. */
-	struct pt_sb_pevent_config pevent;
 };
 
 /* A collection of options. */
 struct ptxed_options {
-	/* Sideband dump flags. */
-	uint32_t sb_dump_flags;
-    
 	/* Do not print the instruction. */
 	uint32_t dont_print_insn:1;
 
@@ -94,9 +84,6 @@ struct ptxed_options {
 
 	/* Print the ip of events. */
 	uint32_t print_event_ip:1;
-
-	/* Print sideband warnings. */
-	uint32_t print_sb_warnings:1;
 };
 
 /* A collection of flags selecting which stats to collect/print. */
@@ -135,17 +122,6 @@ static int ptxed_init_decoder(struct ptxed_decoder *decoder)
 	if (!decoder->iscache)
 		return -pte_nomem;
 
-	decoder->session = pt_sb_alloc(decoder->iscache);
-	if (!decoder->session) {
-		pt_iscache_free(decoder->iscache);
-		return -pte_nomem;
-	}
-    
-	memset(&decoder->pevent, 0, sizeof(decoder->pevent));
-	decoder->pevent.size = sizeof(decoder->pevent);
-	decoder->pevent.kernel_start = UINT64_MAX;
-	decoder->pevent.time_mult = 1;
-
 	return 0;
 }
 
@@ -159,7 +135,7 @@ static int ptxed_print_error(int errcode, const char *filename,
 	if (!options)
 		return -pte_internal;
 
-	if (errcode >= 0 && !options->print_sb_warnings)
+	if (errcode >= 0)
 		return 0;
 
 	if (!filename)
@@ -169,7 +145,7 @@ static int ptxed_print_error(int errcode, const char *filename,
 
 	errstr = errcode < 0
 		? pt_errstr(pt_errcode(errcode))
-		: pt_sb_errstr((enum pt_sb_error_code) errcode);
+		: "";
 
 	if (!errstr)
 		errstr = "<unknown error>";
@@ -237,36 +213,6 @@ static int alloc_decoder(struct ptxed_decoder *decoder,
 	}
 
 	return 0;
-}
-
-static int ptxed_sb_event(struct ptxed_decoder *decoder,
-			  const struct pt_event *event,
-			  const struct ptxed_options *options)
-{
-	struct pt_image *image;
-	int errcode;
-
-	if (!decoder || !event || !options)
-		return -pte_internal;
-
-	image = NULL;
-	errcode = pt_sb_event(decoder->session, &image, event, sizeof(*event),
-			      stdout, options->sb_dump_flags);
-	if (errcode < 0)
-		return errcode;
-
-	if (!image)
-		return 0;
-
-	switch (decoder->type) {
-	case pdt_insn_decoder:
-		return pt_insn_set_image(decoder->variant.insn, image);
-
-	case pdt_block_decoder:
-		return pt_blk_set_image(decoder->variant.block, image);
-	}
-
-	return -pte_internal;
 }
 
 static xed_machine_mode_enum_t translate_mode(enum pt_exec_mode mode)
@@ -1024,10 +970,6 @@ static int drain_events_insn(struct ptxed_decoder *decoder, uint64_t *time,
 
 		if (!options->quiet && !event.status_update)
 			print_event(&event, options, offset);
-
-		errcode = ptxed_sb_event(decoder, &event, options);
-		if (errcode < 0)
-			return errcode;
 	}
 
 	return status;
@@ -1063,10 +1005,6 @@ static int drain_events_block(struct ptxed_decoder *decoder, uint64_t *time,
 
 		if (!options->quiet && !event.status_update)
 			print_event(&event, options, offset);
-
-		errcode = ptxed_sb_event(decoder, &event, options);
-		if (errcode < 0)
-			return errcode;
 	}
 
 	return status;
@@ -1218,10 +1156,10 @@ static void print_block(struct ptxed_decoder *decoder,
 		return;
 
 	// GM
-	printf("BLOCK: 0x%lx -> 0x%lx (%d insns)\n",
-			block->ip,
-			block->end_ip,
-			block->ninsn);
+	// printf("BLOCK: 0x%lx -> 0x%lx (%d insns)\n",
+	// 		block->ip,
+	// 		block->end_ip,
+	// 		block->ninsn);
 
 	ip = block->ip;
 	for (;;) {
@@ -1231,16 +1169,16 @@ static void print_block(struct ptxed_decoder *decoder,
 		int errcode;
 
 		// GM
-		// if (options->print_offset)
-		// 	printf("%016" PRIx64 "  ", offset);
+		if (options->print_offset)
+			printf("%016" PRIx64 "  ", offset);
 
-		// if (options->print_time)
-		// 	printf("%016" PRIx64 "  ", time);
+		if (options->print_time)
+			printf("%016" PRIx64 "  ", time);
 
-		// if (block->speculative)
-		// 	printf("? ");
+		if (block->speculative)
+			printf("? ");
 
-		// printf("%016" PRIx64, ip);
+		printf("%016" PRIx64, ip);
 
 		errcode = block_fetch_insn(&insn, block, ip, decoder->iscache);
 		if (errcode < 0) {
@@ -1261,10 +1199,10 @@ static void print_block(struct ptxed_decoder *decoder,
 		}
 
 		// GM
-		// if (!options->dont_print_insn)
-		// 	xed_print_insn(&inst, insn.ip, options);
+		if (!options->dont_print_insn)
+			xed_print_insn(&inst, insn.ip, options);
 
-		// printf("\n");
+		printf("\n");
 
 		ninsn -= 1;
 		if (!ninsn)
