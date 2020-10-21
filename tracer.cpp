@@ -1,25 +1,19 @@
 #include <iostream>
 #include <fstream>
-#include <string>
 #include <sstream>
 #include <vector>
 
-#include <fcntl.h>
 #include <unistd.h>
 #include <syscall.h>
-#include <dirent.h>
-#include <sys/mman.h>
 #include <linux/perf_event.h>
+#include <sys/mman.h>
 #include <sys/user.h>
 #include <sys/wait.h>
-#include <intel-pt.h>
-#include <asm/ioctl.h>
 #include <sys/ptrace.h>
 
 #include "lib/load_elf.h"
 extern "C" {
 #include "ptxed_util.c"
-#include "lib/xed-interface.h"
 }
 
 using namespace std;
@@ -380,7 +374,7 @@ int main(int argc, char** argv)
 	}
 
     // Set decoder options
-    // options.quiet = 1;
+    options.quiet = 1;
     options.print_stats = 1;
     options.print_raw_insn = 1;
 
