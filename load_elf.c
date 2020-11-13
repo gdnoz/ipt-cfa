@@ -29,6 +29,7 @@
 #include "lib/load_elf.h"
 #include "lib/intel-pt.h"
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <elf.h>
 #include <inttypes.h>
@@ -36,13 +37,172 @@
 #include <string.h>
 #include <limits.h>
 
+static int set_context64(FILE *file, const char *name, const char *prog,
+						 Elf64_Ehdr *ehdr, struct gm_trace_context *context)
+{
+	Elf64_Shdr shdr, shsymtab, shsymstrtab, shstrtab;
+	Elf64_Phdr phdr;
+	Elf64_Dyn dyn;
+	size_t count;
+	int errcode;
+
+	// Read section header strtab
+	fseek(file, ehdr->e_shoff + ehdr->e_shstrndx*ehdr->e_shentsize, SEEK_SET);
+	fread(&shstrtab, ehdr->e_shentsize, 1, file);
+	char strtab[shstrtab.sh_size];
+	fseek(file, shstrtab.sh_offset, SEEK_SET);
+	fread(&strtab, shstrtab.sh_size, 1, file);
+
+	// Find section headers
+	fseek(file, ehdr->e_shoff, SEEK_SET);
+
+	// Read symtab section header and symbol strtab
+	int c = 0;
+	for (int i = 0; i < ehdr->e_shnum; i++)
+	{
+		count = fread(&shdr, sizeof(shdr), 1, file);
+		if (count != 1) {
+			fprintf(stderr,
+				"%s: warning: %s error reading section header: %s.\n",
+				prog, name, strerror(errcode));
+			return -pte_bad_config;
+		}
+
+		if (shdr.sh_type == SHT_SYMTAB)
+		{
+			shsymtab = shdr;
+		}
+		else if (shdr.sh_type == SHT_STRTAB
+			&& strcmp(strtab+shdr.sh_name, ".strtab") == 0)
+		{
+			shsymstrtab = shdr;
+		}
+
+		if (shdr.sh_type && shsymstrtab.sh_type)
+		{
+			break;
+		}
+	}
+
+	if (!shsymstrtab.sh_type)
+	{
+		printf("Symbol not found!\n");
+		exit(EXIT_FAILURE);
+	}
+
+	// Read symbol strtab
+	char symstrtab[shsymstrtab.sh_size];
+	fseek(file, shsymstrtab.sh_offset, SEEK_SET);
+	fread(&symstrtab, shsymstrtab.sh_size, 1, file);
+
+	// Read symtab
+	int symtab_num = shsymtab.sh_size/sizeof(Elf64_Sym);
+	Elf64_Sym symtab[symtab_num];
+	fseek(file, shsymtab.sh_offset, SEEK_SET);
+	fread(&symtab, shsymtab.sh_size, 1, file);
+
+	// Find the symbol matching the requested context
+	for (int i = 0; i < symtab_num; i++)
+	{
+		if ((int)symtab[i].st_name != 0
+			&& strcmp(symstrtab+symtab[i].st_name, context->function) == 0)
+		{
+			context->start = symtab[i].st_value;
+			context->end = context->start + symtab[i].st_size;
+			break;
+		}
+	}
+
+	return 0;
+}
+
+static int set_context32(FILE *file, const char *name, const char *prog,
+						 Elf32_Ehdr *ehdr, struct gm_trace_context *context)
+{
+	Elf32_Shdr shdr, shsymtab, shsymstrtab, shstrtab;
+	Elf32_Phdr phdr;
+	Elf32_Dyn dyn;
+	size_t count;
+	int errcode;
+
+	// Read section header strtab
+	fseek(file, ehdr->e_shoff + ehdr->e_shstrndx*ehdr->e_shentsize, SEEK_SET);
+	fread(&shstrtab, ehdr->e_shentsize, 1, file);
+	char strtab[shstrtab.sh_size];
+	fseek(file, shstrtab.sh_offset, SEEK_SET);
+	fread(&strtab, shstrtab.sh_size, 1, file);
+
+	// Find section headers
+	fseek(file, ehdr->e_shoff, SEEK_SET);
+
+	// Read symtab section header and symbol strtab
+	int c = 0;
+	for (int i = 0; i < ehdr->e_shnum; i++)
+	{
+		count = fread(&shdr, sizeof(shdr), 1, file);
+		if (count != 1) {
+			fprintf(stderr,
+				"%s: warning: %s error reading section header: %s.\n",
+				prog, name, strerror(errcode));
+			return -pte_bad_config;
+		}
+
+		if (shdr.sh_type == SHT_SYMTAB)
+		{
+			shsymtab = shdr;
+		}
+		else if (shdr.sh_type == SHT_STRTAB
+			&& strcmp(strtab+shdr.sh_name, ".strtab") == 0)
+		{
+			shsymstrtab = shdr;
+		}
+
+		if (shdr.sh_type && shsymstrtab.sh_type)
+		{
+			break;
+		}
+	}
+
+	if (!shsymstrtab.sh_type)
+	{
+		printf("Symbol not found!\n");
+		exit(EXIT_FAILURE);
+	}
+
+	// Read symbol strtab
+	char symstrtab[shsymstrtab.sh_size];
+	fseek(file, shsymstrtab.sh_offset, SEEK_SET);
+	fread(&symstrtab, shsymstrtab.sh_size, 1, file);
+
+	// Read symtab
+	int symtab_num = shsymtab.sh_size/sizeof(Elf32_Sym);
+	Elf32_Sym symtab[symtab_num];
+	fseek(file, shsymtab.sh_offset, SEEK_SET);
+	fread(&symtab, shsymtab.sh_size, 1, file);
+
+	// Find the symbol matching the requested context
+	for (int i = 0; i < symtab_num; i++)
+	{
+		if ((int)symtab[i].st_name != 0
+			&& strcmp(symstrtab+symtab[i].st_name, context->function) == 0)
+		{
+			context->start = symtab[i].st_value;
+			context->end = context->start + symtab[i].st_size;
+			break;
+		}
+	}
+
+	return 0;
+}
+
 static int elf_load_offset32(FILE *file, uint64_t base, uint64_t *offset,
-		      const char *name, const char *prog)
+		      const char *name, const char *prog,
+			  struct gm_trace_context *context)
 {
 	Elf32_Ehdr ehdr;
 	Elf32_Half pidx;
 	size_t count;
-	int errcode, sections;
+	int errcode;
 
 	errcode = fseek(file, 0, SEEK_SET);
 	if (errcode) {
@@ -72,9 +232,9 @@ static int elf_load_offset32(FILE *file, uint64_t base, uint64_t *offset,
 	if (!base)
 		*offset = 0;
 	else {
-		uint64_t minaddr;
+		uint32_t minaddr;
 
-		minaddr = UINT64_MAX;
+		minaddr = UINT32_MAX;
 
 		for (pidx = 0; pidx < ehdr.e_phnum; ++pidx) {
 			Elf32_Phdr phdr;
@@ -96,18 +256,26 @@ static int elf_load_offset32(FILE *file, uint64_t base, uint64_t *offset,
 		}
 
 		*offset = base - minaddr;
+
+		printf("offset: %lx, base: %lx, minaddr: %x\n", *offset, base, minaddr);
+	}
+
+	if (context && context->function != NULL)
+	{
+		set_context32(file, name, prog, &ehdr, context);
 	}
 
 	return 0;
 }
 
 static int elf_load_offset64(FILE *file, uint64_t base, uint64_t *offset,
-		      const char *name, const char *prog)
+		      const char *name, const char *prog,
+			  struct gm_trace_context *context)
 {
 	Elf64_Ehdr ehdr;
 	Elf64_Half pidx;
 	size_t count;
-	int errcode, sections;
+	int errcode;
 
 	errcode = fseek(file, 0, SEEK_SET);
 	if (errcode) {
@@ -164,16 +332,22 @@ static int elf_load_offset64(FILE *file, uint64_t base, uint64_t *offset,
 
 			if (phdr.p_vaddr < minaddr)
 				minaddr = phdr.p_vaddr;
-
 		}
 
 		*offset = base - minaddr;
 	}
 
+	if (context && context->function != NULL)
+	{
+		set_context64(file, name, prog, &ehdr, context);
+	}
+
 	return 0;
 }
 
-int elf_load_offset(const char *name, uint64_t base, uint64_t *offset, const char *prog)
+int elf_load_offset(const char *name, uint64_t base,
+			  uint64_t *offset, const char *prog,
+			  struct gm_trace_context *context)
 {
 	uint8_t e_ident[EI_NIDENT];
 	FILE *file;
@@ -216,11 +390,11 @@ int elf_load_offset(const char *name, uint64_t base, uint64_t *offset, const cha
 		break;
 
 	case ELFCLASS32:
-		errcode = elf_load_offset32(file, base, offset, name, prog);
+		errcode = elf_load_offset32(file, base, offset, name, prog, context);
 		break;
 
 	case ELFCLASS64:
-		errcode = elf_load_offset64(file, base, offset, name, prog);
+		errcode = elf_load_offset64(file, base, offset, name, prog, context);
 		break;
 	}
 

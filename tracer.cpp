@@ -10,6 +10,7 @@
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <sys/ptrace.h>
+#include <sys/ioctl.h>
 
 #include "lib/load_elf.h"
 extern "C" {
@@ -37,13 +38,53 @@ void report_error(int err)
     printf("ERROR %d: %s\n", err, pt_errstr(pt_errcode(err)));
 }
 
+static int parse_context(gm_trace_context *context, char *arg)
+{
+    uint32_t sep, len = strlen(arg);
+
+    // Check whether the argument is a range
+    for (sep = 0; sep < len; sep++)
+    {
+        if (arg[sep] == '-')
+        {
+            break;
+        }
+    }
+
+    // If the argument is a function name, simply set it and return 0
+    if (sep == len)
+    {
+        context->function = arg;
+    }
+    // If the argument is a range of addresses, parse them into the context
+    else
+    {
+        string range;
+        stringstream ss;
+
+        range = arg;
+
+        // Parse the start address
+        ss << hex << range.substr(0, sep);
+        ss >> context->start;
+        ss.clear();
+        
+        // Parse the end address
+        ss << hex << range.substr(sep+1, len);
+        ss >> context->end;
+    }
+
+    return 0;
+}
+
 /**
  * This function parses the maps file for the target process
  * and returns the number of mapped executable file sections.
  * If save is set to a non-zero value, it also stores each
  * section's file name and base address in a vector.
  */
-static int get_linked_files(vector<gm_file_link> *links, bool save)
+static int get_linked_files(vector<gm_file_link> *links,
+                            gm_trace_context *context, bool save)
 {
 	int status, cnt = 0;
     string line;
@@ -87,19 +128,21 @@ static int get_linked_files(vector<gm_file_link> *links, bool save)
             // Skip non-filename identifiers
             if (target.length() > 0 && target[0] != '[')
             {
-                // Compute library load offset
-                uint64_t offset;
-                elf_load_offset(target.c_str(), startaddr, &offset, TARGET_CMD);
-
-                // Add the file information to links
-                gm_file_link link;
-                link.filename = target;
-                link.base = offset;
                 cnt++;
 
                 // Only save the results if parameter is set
                 if (save)
                 {
+                    // Compute library load offset
+                    uint64_t offset;
+                    elf_load_offset(target.c_str(), startaddr, &offset,
+                                    TARGET_CMD, target.compare(TARGET_CMD) == 0
+                                        ? context : NULL);
+
+                    // Add the file information to links
+                    gm_file_link link;
+                    link.filename = target;
+                    link.base = offset;
                     links->push_back(link);
                 }
             }
@@ -188,10 +231,9 @@ int libcount()
  * block-by-block until it has mapped the expected
  * number of external libraries and stores the list.
  */
-void monitor_maps(void *arg)
+void monitor_maps(vector<struct gm_file_link> *links,
+                  gm_trace_context *context)
 {
-    vector<struct gm_file_link> *links = (vector<struct gm_file_link> *)arg;
-
     // Determine the expected number of linked libraries
     int mapcnt, libcnt = libcount();
 
@@ -203,11 +245,11 @@ void monitor_maps(void *arg)
         ptrace(PTRACE_SINGLEBLOCK, TARGET_PID);
 
         // Check current number of mapped libraries
-        mapcnt = get_linked_files(links, false);
+        mapcnt = get_linked_files(links, context, false);
     } while (mapcnt < libcnt);
 
     // Load the linked libraries
-    get_linked_files(links, true);
+    get_linked_files(links, context, true);
 }
 
 /**
@@ -222,7 +264,7 @@ static int load_image(
 {
     int status;
 
-    printf("Loading linked libraries into decoder image...\n");
+    // printf("Loading linked libraries into decoder image...\n");
 
     // Loop through the saved linked libraries
     for (int i = 0; i < links->size(); i++)
@@ -232,7 +274,7 @@ static int load_image(
         int len = cur->filename.size()+1;
         char *cfilename = new char[len];
         strcpy(cfilename, cur->filename.c_str());
-        printf("+   %s: base=0x%lx\n", cur->filename.c_str(), cur->base);
+        // printf("+   %s: base=0x%lx\n", cur->filename.c_str(), cur->base);
 
         // Load the file at the appropriate offset
         status = load_raw(decoder->iscache, image, cfilename, cur->base, prog);
@@ -250,11 +292,10 @@ perf_event_mmap_page* alloc_pt_buf()
 {
     struct perf_event_attr attr;
 
-    printf("Allocating buffer for IPT...\n");
+    // printf("Allocating buffer for IPT...\n");
     memset(&attr, 0, sizeof(attr));
     attr.size = sizeof(attr);
     attr.exclude_kernel = 1;
-    attr.context_switch = 1;
     attr.disabled = 1;
     
     // Read IPT PMU type from system file
@@ -284,8 +325,8 @@ perf_event_mmap_page* alloc_pt_buf()
     header->aux_offset = header->data_offset + header->data_size;
     header->aux_size = AUX_SIZE * PAGE_SIZE;
     
-    printf("+   DATA: 0x%llx-0x%llx (%llu bytes)\n",
-            header->data_head, header->data_tail, header->data_size);
+    // printf("+   DATA: 0x%llx-0x%llx (%llu bytes)\n",
+    //         header->data_head, header->data_tail, header->data_size);
             
     // Map AUX region to memory
     aux = mmap(NULL, header->aux_size, PROT_READ, MAP_SHARED, FD, header->aux_offset);
@@ -298,20 +339,29 @@ perf_event_mmap_page* alloc_pt_buf()
     header->aux_head = (uint64_t)aux;
     header->aux_tail = header->aux_head + header->aux_size;
 
-    printf("+   AUX: 0x%llx-0x%llx (%llu bytes)\n",
-            header->aux_head, header->aux_tail, header->aux_size);
+    // printf("+   AUX: 0x%llx-0x%llx (%llu bytes)\n",
+    //         header->aux_head, header->aux_tail, header->aux_size);
 
     return header;
 }
 
 int main(int argc, char** argv)
 {
-    pthread_t listener;
     vector<struct gm_file_link> links;
+    gm_trace_context context;
 
     // Arg 1: target command
     TARGET_CMD = argv[1];
     char* const command[] = {TARGET_CMD, NULL};
+
+    // Arg 2: target context (optional). Can be a function name
+    //        or a range of address offsets
+    if (argc > 2)
+    {
+        parse_context(&context, argv[2]);
+    }
+    // context.function = new char[+1];
+    // strcpy(context.function, argv[2]);
 
     // Fork a new child process to run the target executable
     TARGET_PID = fork();
@@ -339,11 +389,36 @@ int main(int argc, char** argv)
         // Allocate memory buffer for IPT
         header = alloc_pt_buf();
         // Wait for the list of linked libraries to become fully populated
-        monitor_maps(&links);
+        monitor_maps(&links, &context);
+        // printf("Context:\n\tfunction:\t%s\n\tstart:\t\t0x%lx\n\tend:\t\t0x%lx\n",
+        //     context.function, context.start, context.end);
+
         // Tell child process to proceed
         ptrace(PTRACE_CONT, TARGET_PID);
+
+        // Generate IP filter string for specified range/method
+        if (context.start > 0)
+        {
+            char filterstr[128];
+            sprintf(filterstr, "filter 0x%lx/%lu@%s",
+                context.start,
+                context.end-context.start,
+                TARGET_CMD);
+
+            int filterr = ioctl(FD, PERF_EVENT_IOC_SET_FILTER,
+                filterstr);
+            // if (filterr)
+            // {
+            //     printf("FAILED! (%d)\n", filterr);
+            // }
+            // else
+            // {
+            //     printf("IP filter: %s\n", filterstr);
+            // }
+        }
+        
         // Enable Intel PT recording
-        syscall(SYS_ioctl, FD, PERF_EVENT_IOC_ENABLE);
+        ioctl(FD, PERF_EVENT_IOC_ENABLE);
     }
 
 	struct ptxed_decoder decoder;
@@ -374,9 +449,11 @@ int main(int argc, char** argv)
 	}
 
     // Set decoder options
-    options.quiet = 1;
+    // options.quiet = 1;
+    // decoder.type = pdt_insn_decoder;
     options.print_stats = 1;
     options.print_raw_insn = 1;
+    options.track_blocks = 1;
 
     // Load linked libraries into decoder image
     errcode = load_image(&links, &decoder, image, TARGET_CMD);
@@ -416,10 +493,11 @@ int main(int argc, char** argv)
     // Start decoding
 	decode(&decoder, &options, &stats);
 
-    // Clean up
-    syscall(SYS_ioctl, FD, PERF_EVENT_IOC_DISABLE);
+    // Disable and close the PERF event listener
+    ioctl(FD, PERF_EVENT_IOC_DISABLE);
     close(FD);
 
+    // Print stats
 	if (options.print_stats)
     {
 		print_stats(&stats);

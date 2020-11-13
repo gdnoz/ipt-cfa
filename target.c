@@ -1,34 +1,34 @@
 #include <stdio.h>
 #include <unistd.h>
 
-// static int listmaps()
-// {
-// 	int status;
-// 	char filename[32];
-//     FILE *file;
-// 	char line[256];
+static int listmaps()
+{
+	int status;
+	char filename[32];
+    FILE *file;
+	char line[256];
 
-// 	sprintf(filename, "/proc/%d/maps", getpid());
+	sprintf(filename, "/proc/%d/maps", getpid());
 
-// 	file = fopen(filename, "r");
+	file = fopen(filename, "r");
 
-// 	while (fgets(line, sizeof(line), file) != NULL)
-// 	{
-// 		printf("%s", line);
-// 	}
+	while (fgets(line, sizeof(line), file) != NULL)
+	{
+		// printf("%s", line);
+	}
 
-//     fclose(file);
+    fclose(file);
 
-//     return 0;
-// }
+    return 0;
+}
 
 int main (int argc, char* argv [])
 {
-	// listmaps();
+	listmaps();
 
 	int a;
 
-	for (int i = 0; i < 10000; i++)
+	for (int i = 0; i < 3; i++)
 	{
 		a = 0;
 		a = 1;
@@ -41,7 +41,6 @@ int main (int argc, char* argv [])
 		a = 8;
 		a = 9;
 	}
-	printf("Done!\n");
-
+	
 	return 0;
 }

@@ -1313,8 +1313,11 @@ static void decode_block(struct ptxed_decoder *decoder,
 		/* Initialize IP and ninsn - we use it for error reporting. */
 		block.ip = 0ull;
 		block.ninsn = 0u;
+		do
+		{
+			status = pt_blk_sync_forward(ptdec);
+		} while (status == -pte_eos);
 		
-		status = pt_blk_sync_forward(ptdec);
 		if (status < 0) {
 			uint64_t new_sync;
 			int errcode;

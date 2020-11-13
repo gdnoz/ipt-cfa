@@ -57,7 +57,15 @@ struct pt_image;
  * Returns -pte_bad_config if @file can't be processed.
  * Returns -pte_nomem if not enough memory can be allocated.
  */
+
+struct gm_trace_context
+{
+	char* function = 0;
+	uint64_t start = 0;
+	uint64_t end = 0;
+};
+
 extern int elf_load_offset(const char *name, uint64_t base, uint64_t *offset,
-		 const char *prog);
+		 const char *prog, gm_trace_context *context);
 
 #endif /* LOAD_ELF_H */
