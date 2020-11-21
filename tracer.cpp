@@ -360,8 +360,6 @@ int main(int argc, char** argv)
     {
         parse_context(&context, argv[2]);
     }
-    // context.function = new char[+1];
-    // strcpy(context.function, argv[2]);
 
     // Fork a new child process to run the target executable
     TARGET_PID = fork();
@@ -400,21 +398,13 @@ int main(int argc, char** argv)
         if (context.start > 0)
         {
             char filterstr[128];
-            sprintf(filterstr, "filter 0x%lx/%lu@%s",
+            snprintf(filterstr, 128, "filter 0x%lx/%lu@%s",
                 context.start,
                 context.end-context.start,
                 TARGET_CMD);
 
-            int filterr = ioctl(FD, PERF_EVENT_IOC_SET_FILTER,
-                filterstr);
-            // if (filterr)
-            // {
-            //     printf("FAILED! (%d)\n", filterr);
-            // }
-            // else
-            // {
-            //     printf("IP filter: %s\n", filterstr);
-            // }
+            ioctl(FD, PERF_EVENT_IOC_SET_FILTER, filterstr);
+            // printf("IP filter: %s\n", filterstr);
         }
         
         // Enable Intel PT recording
@@ -449,8 +439,8 @@ int main(int argc, char** argv)
 	}
 
     // Set decoder options
-    // options.quiet = 1;
     // decoder.type = pdt_insn_decoder;
+    options.quiet = 1;
     options.print_stats = 1;
     options.print_raw_insn = 1;
     options.track_blocks = 1;

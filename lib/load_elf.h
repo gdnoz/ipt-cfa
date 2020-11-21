@@ -60,9 +60,10 @@ struct pt_image;
 
 struct gm_trace_context
 {
-	char* function = 0;
+	uint64_t base = 0;
 	uint64_t start = 0;
 	uint64_t end = 0;
+	char* function = 0;
 };
 
 extern int elf_load_offset(const char *name, uint64_t base, uint64_t *offset,

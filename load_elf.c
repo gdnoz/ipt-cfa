@@ -256,12 +256,11 @@ static int elf_load_offset32(FILE *file, uint64_t base, uint64_t *offset,
 		}
 
 		*offset = base - minaddr;
-
-		printf("offset: %lx, base: %lx, minaddr: %x\n", *offset, base, minaddr);
 	}
 
 	if (context && context->function != NULL)
 	{
+		context->base = *offset;
 		set_context32(file, name, prog, &ehdr, context);
 	}
 
@@ -337,9 +336,14 @@ static int elf_load_offset64(FILE *file, uint64_t base, uint64_t *offset,
 		*offset = base - minaddr;
 	}
 
-	if (context && context->function != NULL)
+	if (context)
 	{
-		set_context64(file, name, prog, &ehdr, context);
+		context->base = *offset;
+
+		if (context->function != NULL)
+		{
+			set_context64(file, name, prog, &ehdr, context);
+		}
 	}
 
 	return 0;

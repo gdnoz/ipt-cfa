@@ -2,6 +2,9 @@
 #include <intel-pt.h>
 
 #include "lib/xed-interface.h"
+#include "lib/load_elf.h"
+
+#define GM_LEFT_CONTEXT 1
 
 enum ptxed_decoder_type {
 	pdt_insn_decoder,
@@ -976,7 +979,7 @@ static int drain_events_insn(struct ptxed_decoder *decoder, uint64_t *time,
 }
 
 static int drain_events_block(struct ptxed_decoder *decoder, uint64_t *time,
-			      int status, const struct ptxed_options *options)
+			      int status, const struct ptxed_options *options, uint16_t *ctxflags)
 {
 	struct pt_block_decoder *ptdec;
 	int errcode;
@@ -989,6 +992,12 @@ static int drain_events_block(struct ptxed_decoder *decoder, uint64_t *time,
 	while (status & pts_event_pending) {
 		struct pt_event event;
 		uint64_t offset;
+
+		// GM
+		if (status & pts_ip_suppressed)
+		{
+			*ctxflags |= GM_LEFT_CONTEXT;
+		}
 
 		offset = 0ull;
 		if (options->print_offset) {
@@ -1287,6 +1296,276 @@ static void check_block(const struct pt_block *block,
 		check_insn_iclass(xed_decoded_inst_inst(&inst), &insn, offset);
 }
 
+// GM
+static int extract_insn(char *insn, char *buf)
+{
+	char bufcpy[strlen(buf)+1];
+	strcpy(bufcpy, buf);
+
+	char *token = strtok(bufcpy, " ");
+
+	strcpy(insn, token);
+	
+	return 0;
+}
+
+// GM
+static int extract_target(char *target, char *buf)
+{
+	// Parse the last word of the buffer
+	char *token = strrchr(buf, ' ')+1;
+	strcpy(target, token);
+
+	return 0;
+}
+
+// GM
+static int extract_addr(long unsigned int *addr, char *buf, uint64_t ip)
+{
+	// Parse the last word of the buffer
+	char *token = strrchr(buf, ' ')+1;
+	int toklen = strlen(token);
+	*addr = strtoul(token, NULL, 16);
+
+	if (*addr != 0)
+	{
+		return 0;
+	}
+
+	// Try to parse rip-relative address
+	// TODO: Figure out what base this is actually relative to?
+	/*if (token[0] == '[' && strncmp(token+1, "rip", 3) == 0)
+	{
+		printf("%s\n", token);
+		token = strchr(token, '+')+1;
+
+		if (token != NULL)
+		{
+			token[strlen(token)-1] = '\0';
+			*addr = strtoul(token, NULL, 16);
+			if (*addr != 0)
+			{
+				*addr += ip;
+			}
+		}
+	}
+	
+	if (*addr != 0)
+	{
+		return 0;
+	}*/
+	
+	return -1;
+}
+
+// GM
+static void print_cfg(struct ptxed_decoder *decoder,
+								   const struct ptxed_options *options,
+								   struct pt_block *block_prev,
+								   struct pt_block *block,
+								   struct ptxed_stats *stats,
+								   uint16_t *ctxflags)
+{
+	xed_machine_mode_enum_t mode;
+	xed_decoded_inst_t inst;
+	xed_error_enum_t xederrcode;
+	xed_print_info_t pi;
+	xed_state_t xed;
+	struct pt_insn insn;
+	char buffer[256], target[128];
+	int errcode;
+	long unsigned int branchaddr;
+
+	// Init xed components
+	mode = translate_mode(block_prev->mode);
+	xed_state_init2(&xed, mode, XED_ADDRESS_WIDTH_INVALID);
+
+	// Detect leaving context
+	// Get previous instruction
+	if (block_prev->ninsn)
+	{
+		errcode = block_fetch_insn(&insn, block_prev, block_prev->end_ip,
+									decoder->iscache);
+		if (errcode < 0) {
+			printf(" [fetch error: %s]\n",
+					pt_errstr(pt_errcode(errcode)));
+			return;
+		}
+
+		// Decode last instruction
+		xed_decoded_inst_zero_set_mode(&inst, &xed);
+		xederrcode = xed_decode(&inst, insn.raw, insn.size);
+		if (xederrcode != XED_ERROR_NONE) {
+			print_raw_insn(&insn);
+
+			printf(" [xed decode error: (%u) %s]\n", xederrcode,
+					xed_error_enum_t2str(xederrcode));
+			return;
+		}
+
+		if (block_prev->iclass == ptic_jump
+			|| block_prev->iclass == ptic_cond_jump
+			|| block_prev->iclass == ptic_far_jump)
+		{
+			// Print last insn information
+			xed_init_print_info(&pi);
+			pi.p = &inst;
+			pi.buf = buffer;
+			pi.blen = sizeof(buffer);
+			pi.runtime_address = insn.ip;
+
+			xed_format_generic(&pi);
+
+			// Retrieve operand address
+			extract_addr(&branchaddr, pi.buf, block_prev->ip);
+			extract_target(target, pi.buf);
+
+			// If unable, find preceding call and repeat
+			uint64_t ip_orig = block_prev->end_ip, ip = block_prev->end_ip;
+			if (branchaddr == 0)
+			{
+				// Find last call instruction in block
+				for (int ninsn = 0; ninsn < block_prev->ninsn; ninsn++)
+				{
+					if (errcode < 0) {
+						diagnose(decoder, ip, "reconstruct error", errcode);
+						break;
+					}
+					
+					// Get instruction
+					errcode = block_fetch_insn(&insn, block_prev, ip, decoder->iscache);
+					if (errcode < 0) {
+						printf(" [fetch error: %s]\n",
+								pt_errstr(pt_errcode(errcode)));
+						return;
+					}
+					// TODO: Find a way to get insn.iclass here & skip decoding if not call
+					// Decode instruction
+					xed_decoded_inst_zero_set_mode(&inst, &xed);
+					xederrcode = xed_decode(&inst, insn.raw, insn.size);
+					if (xederrcode != XED_ERROR_NONE) {
+						print_raw_insn(&insn);
+
+						printf(" [xed decode error: (%u) %s]\n", xederrcode,
+								xed_error_enum_t2str(xederrcode));
+						return;
+					}
+
+					// Parse instruction
+					xed_init_print_info(&pi);
+					pi.p = &inst;
+					pi.buf = buffer;
+					pi.blen = sizeof(buffer);
+					pi.runtime_address = insn.ip;
+
+					xed_format_generic(&pi);
+
+					char cmd[16];
+					extract_insn(cmd, pi.buf);
+					if (strcmp(cmd, "call") == 0)
+					{
+						extract_addr(&branchaddr, pi.buf, ip);
+						extract_target(target, pi.buf);
+					}
+
+					errcode = xed_next_ip(&ip, &inst, ip);
+				}
+			}
+			
+			// Ignore conditional jumps not taken
+			if (!(block_prev->iclass == ptic_cond_jump
+				&& branchaddr != block->ip))
+			{
+				if (*ctxflags & GM_LEFT_CONTEXT)
+				{
+					printf("<");
+				}
+				else
+				{
+					printf("*");
+				}
+
+				if (ip == ip_orig)
+				{
+					// TODO: Combine identical cond JUMPs?
+					// (Basically identify and count loops)
+					printf("JUMP");
+				}
+				else
+				{
+					printf("CALL");
+				}
+				printf("  @ 0x%lx", ip_orig);
+
+				if (branchaddr == 0)
+				{
+					printf(" target: %s", target);
+				}
+				else
+				{
+					printf(" target: 0x%lx", branchaddr);
+				}
+				printf("\n");
+			}
+		}
+
+		// Handle indirect calls
+		if (block_prev->iclass == ptic_call)
+		{
+			// Print last insn information
+			xed_init_print_info(&pi);
+			pi.p = &inst;
+			pi.buf = buffer;
+			pi.blen = sizeof(buffer);
+			pi.runtime_address = insn.ip;
+
+			xed_format_generic(&pi);
+
+			// Retrieve operand address
+			extract_addr(&branchaddr, pi.buf, block_prev->ip);
+
+			// Check if address falls outside context
+			if (*ctxflags & GM_LEFT_CONTEXT)
+			{
+				printf("<");
+			}
+			else
+			{
+				printf("*");
+			}
+
+			printf("CALL  @ 0x%lx", block_prev->end_ip);
+
+			if (branchaddr != 0)
+			{
+				printf(" target: 0x%lx", branchaddr);
+			}
+
+			printf("\n");
+		}
+
+		if (block_prev->iclass == ptic_far_call)
+		{
+			printf("?CALL  @ 0x%lx\n", block_prev->end_ip);
+		}
+	}
+
+	// Detect entry into context
+	if (!block_prev->ninsn || (*ctxflags & GM_LEFT_CONTEXT))
+	{
+		printf(">ENTER @ 0x%lx\n", block->ip);
+	}
+
+	// TODO: Identify whether this exits the context (add ctxflag?)
+	if (block->iclass == ptic_return
+		|| block->iclass == ptic_far_return)
+	{
+		printf("?RET   @ 0x%lx\n", block->end_ip);
+	}
+
+	return;
+}
+
 static void decode_block(struct ptxed_decoder *decoder,
 			 const struct ptxed_options *options,
 			 struct ptxed_stats *stats)
@@ -1307,7 +1586,8 @@ static void decode_block(struct ptxed_decoder *decoder,
 	time = 0ull;
 
 	for (;;) {
-		struct pt_block block;
+		// GM
+		struct pt_block block, prev_block;
 		int status;
 
 		/* Initialize IP and ninsn - we use it for error reporting. */
@@ -1345,11 +1625,13 @@ static void decode_block(struct ptxed_decoder *decoder,
 		}
 
 		for (;;) {
+			// GM
+			uint16_t ctxflags = 0;
 			status = drain_events_block(decoder, &time, status,
-						    options);
+						    options, &ctxflags);
 			if (status < 0)
 				break;
-
+			
 			if (status & pts_eos) {
 				if (!(status & pts_ip_suppressed) &&
 				    !options->quiet)
@@ -1366,6 +1648,9 @@ static void decode_block(struct ptxed_decoder *decoder,
 				if (errcode < 0)
 					break;
 			}
+
+			// GM
+			prev_block = block;
 
 			status = pt_blk_next(ptdec, &block, sizeof(block));
 			if (status < 0) {
@@ -1394,6 +1679,9 @@ static void decode_block(struct ptxed_decoder *decoder,
 				stats->insn += block.ninsn;
 				stats->blocks += 1;
 			}
+
+			// GM
+			print_cfg(decoder, options, &prev_block, &block, stats, &ctxflags);
 
 			if (!options->quiet)
 				print_block(decoder, &block, options, stats,
