@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <sys/ptrace.h>
 #include <sys/ioctl.h>
+#include <cpuid.h>
 
 #include "lib/load_elf.h"
 extern "C" {
@@ -38,6 +39,44 @@ void report_error(int err)
     printf("ERROR %d: %s\n", err, pt_errstr(pt_errcode(err)));
 }
 
+/**
+ * This function uses the GCC __get_cpuid method to determine
+ * the family, model and stepping values for the processor
+ * it is running on and applies them to the IPT config. This
+ * is required for the libipt workaround for erratum SKL014:
+ * Intel(R) PT TIP.PGD May Not Have Target IP Payload.
+ */
+void cpu_info(pt_config *config)
+{
+    unsigned level = 1, eax = 0, ebx, ecx, edx;
+
+    __get_cpuid(level, &eax, &ebx, &ecx, &edx);
+
+    config->cpu.vendor = pcv_intel; // We assume this to be the case
+    config->cpu.family = (((eax >> 20) & 0xFF) << 4) + ((eax >> 8) & 0xF);
+    config->cpu.model = (((eax >> 16) & 0xF) << 4) + ((eax >> 4) & 0xF);
+    config->cpu.stepping = eax & 0xF;
+
+    // Validate settings
+    int errcode = pt_cpu_errata(&config->errata, &config->cpu);
+
+    if (errcode < 0)
+    {
+        printf("[0, 0: config error: %s]\n",
+                  pt_errstr(pt_errcode(errcode)));
+
+        printf("\tfamily %d\n", config->cpu.family);
+        printf("\tmodel %d\n", config->cpu.model);
+        printf("\tstepping %d\n", config->cpu.stepping);
+    }
+}
+
+/**
+ * This function parses the filter command line argument and
+ * initializes the trace context accordingly. The filter string
+ * can be a symbol name or range of address offsets on the form
+ * 0x<start>-0x<end> in the target executable.
+ */
 static int parse_context(gm_trace_context *context, char *arg)
 {
     uint32_t sep, len = strlen(arg);
@@ -131,7 +170,9 @@ static int get_linked_files(vector<gm_file_link> *links,
                 cnt++;
 
                 // Only save the results if parameter is set
-                if (save)
+                if (save && ((context->function == NULL
+                    && context->end == 0)
+                    || target.compare(TARGET_CMD) == 0))
                 {
                     // Compute library load offset
                     uint64_t offset;
@@ -234,6 +275,7 @@ int libcount()
 void monitor_maps(vector<struct gm_file_link> *links,
                   gm_trace_context *context)
 {
+    // TODO: Skip all this checking if context is set.
     // Determine the expected number of linked libraries
     int mapcnt, libcnt = libcount();
 
@@ -395,7 +437,7 @@ int main(int argc, char** argv)
         ptrace(PTRACE_CONT, TARGET_PID);
 
         // Generate IP filter string for specified range/method
-        if (context.start > 0)
+        if (context.end > 0)
         {
             char filterstr[128];
             snprintf(filterstr, 128, "filter 0x%lx/%lu@%s",
@@ -458,6 +500,17 @@ int main(int argc, char** argv)
     config.begin = (uint8_t *)header->aux_head;
     config.end = (uint8_t *)header->aux_tail;
 
+    // We must set the correct cpu and specify the IP filtering
+    // config to avoid the issue described in libipt erratum SKL014
+    cpu_info(&config);
+
+    if (context.end > 0)
+    {
+        config.addr_filter.config.ctl.addr0_cfg = 1;
+        config.addr_filter.addr0_a = context.start;
+        config.addr_filter.addr0_b = context.end;
+    }
+
     // Allocate the decoder using the specified options and config
     alloc_decoder(&decoder, &config, image, &options, TARGET_CMD);
 	if (!ptxed_have_decoder(&decoder))
@@ -481,7 +534,7 @@ int main(int argc, char** argv)
 	}
 
     // Start decoding
-	decode(&decoder, &options, &stats);
+	decode(&decoder, &options, &stats, &context);
 
     // Disable and close the PERF event listener
     ioctl(FD, PERF_EVENT_IOC_DISABLE);

@@ -1,65 +1,14 @@
-#include <stdio.h>
-#include <unistd.h>
-
 static int func()
 {
-	int status;
-	char filename[32];
-    FILE *file;
-	char line[256];
-
-	sprintf(filename, "/proc/%d/maps", getpid());
-
-	file = fopen(filename, "r");
-
-	// while (fgets(line, sizeof(line), file) != NULL)
-	// {
-	// 	// printf("%s", line);
-	// }
-
-    fclose(file);
-
-    return 0;
-}
-
-static int otherfunc()
-{
-	int status;
-	char filename[32];
-    FILE *file;
-	char line[256];
-
-	sprintf(filename, "/something/%d/else\n", 123);
-
-	// file = fopen(filename, "r");
-
-	// while (fgets(line, sizeof(line), file) != NULL)
-	// {
-	// 	// printf("%s", line);
-	// }
-
-    // fclose(file);
-
-    return 0;
+	return 5+5;
 }
 
 int main (int argc, char* argv [])
 {
-	int a;
+	int a = func();
 
-	func();
-
-	for (int i = 0; i < 3; i++)
+	for (int i = 0; i < 5; i++)
 	{
-		if (i % 2 == 0)
-		{
-			a = 10;
-		}
-		else
-		{
-			a = 20;
-		}
-		
 		a = 0;
 		a = 1;
 		a = 2;
@@ -71,8 +20,6 @@ int main (int argc, char* argv [])
 		a = 8;
 		a = 9;
 	}
-
-	otherfunc();
 
 	return 0;
 }
