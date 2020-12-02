@@ -20,6 +20,8 @@ extern "C" {
 
 using namespace std;
 
+bool verbose = false;
+
 int FD;
 char* TARGET_CMD;
 pid_t TARGET_PID;
@@ -79,29 +81,19 @@ void cpu_info(pt_config *config)
  */
 static int parse_context(gm_trace_context *context, char *arg)
 {
-    uint32_t sep, len = strlen(arg);
-
+    string range = arg;
     // Check whether the argument is a range
-    for (sep = 0; sep < len; sep++)
-    {
-        if (arg[sep] == '-')
-        {
-            break;
-        }
-    }
+    uint32_t sep = range.find('-');
 
     // If the argument is a function name, simply set it and return 0
-    if (sep == len)
+    if (sep == -1)
     {
         context->function = arg;
     }
     // If the argument is a range of addresses, parse them into the context
     else
     {
-        string range;
         stringstream ss;
-
-        range = arg;
 
         // Parse the start address
         ss << hex << range.substr(0, sep);
@@ -109,7 +101,7 @@ static int parse_context(gm_trace_context *context, char *arg)
         ss.clear();
         
         // Parse the end address
-        ss << hex << range.substr(sep+1, len);
+        ss << hex << range.substr(sep+1, range.length());
         ss >> context->end;
     }
 
@@ -128,7 +120,7 @@ static int get_linked_files(vector<gm_file_link> *links,
 	int status, cnt = 0;
     string line;
 	char *filename = new char[32];
-    // Parse the maps file of target process
+    // Determine the maps filename of target process
 	sprintf(filename, "/proc/%d/maps", TARGET_PID);
 
     // Open file stream on maps filename
@@ -170,6 +162,8 @@ static int get_linked_files(vector<gm_file_link> *links,
                 cnt++;
 
                 // Only save the results if parameter is set
+                // and current target is main executable if
+                // context is set
                 if (save && ((context->function == NULL
                     && context->end == 0)
                     || target.compare(TARGET_CMD) == 0))
@@ -263,7 +257,7 @@ int libcount()
         pclose(stream);
     }
 
-    // Add one for the base executable
+    // Add one for the main executable
     return cnt+1;
 }
 
@@ -275,20 +269,25 @@ int libcount()
 void monitor_maps(vector<struct gm_file_link> *links,
                   gm_trace_context *context)
 {
-    // TODO: Skip all this checking if context is set.
     // Determine the expected number of linked libraries
-    int mapcnt, libcnt = libcount();
+    // Should be exactly 1 if context is set
+    int mapcnt, libcnt = context->function == NULL
+                        && context->end == 0 ? libcount() : 1;
 
-    // While the actual number of linked libraries is
-    // less than the expected number, keep checking
-    do
+    // Skip the loop if expecting only 1 link
+    if (libcnt > 1)
     {
-        // Step child process one block forward
-        ptrace(PTRACE_SINGLEBLOCK, TARGET_PID);
+        // While the actual number of linked libraries is
+        // less than the expected number, keep checking
+        do
+        {
+            // Step child process one block forward
+            ptrace(PTRACE_SINGLEBLOCK, TARGET_PID);
 
-        // Check current number of mapped libraries
-        mapcnt = get_linked_files(links, context, false);
-    } while (mapcnt < libcnt);
+            // Check current number of linked libraries
+            mapcnt = get_linked_files(links, context, false);
+        } while (mapcnt < libcnt);
+    }
 
     // Load the linked libraries
     get_linked_files(links, context, true);
@@ -306,7 +305,10 @@ static int load_image(
 {
     int status;
 
-    // printf("Loading linked libraries into decoder image...\n");
+    if (verbose)
+    {
+        printf("Loading linked libraries into decoder image...\n");
+    }
 
     // Loop through the saved linked libraries
     for (int i = 0; i < links->size(); i++)
@@ -316,7 +318,11 @@ static int load_image(
         int len = cur->filename.size()+1;
         char *cfilename = new char[len];
         strcpy(cfilename, cur->filename.c_str());
-        // printf("+   %s: base=0x%lx\n", cur->filename.c_str(), cur->base);
+
+        if (verbose)
+        {
+            printf("+   %s: base=0x%lx\n", cur->filename.c_str(), cur->base);
+        }
 
         // Load the file at the appropriate offset
         status = load_raw(decoder->iscache, image, cfilename, cur->base, prog);
@@ -334,7 +340,11 @@ perf_event_mmap_page* alloc_pt_buf()
 {
     struct perf_event_attr attr;
 
-    // printf("Allocating buffer for IPT...\n");
+    if (verbose)
+    {
+        printf("Allocating buffer for IPT...\n");
+    }
+
     memset(&attr, 0, sizeof(attr));
     attr.size = sizeof(attr);
     attr.exclude_kernel = 1;
@@ -350,10 +360,10 @@ perf_event_mmap_page* alloc_pt_buf()
     FD = syscall(SYS_perf_event_open, &attr, TARGET_PID, -1, -1, 0);
 
     struct perf_event_mmap_page *header;
-    void *base, *data, *aux;
+    void *base, *aux;
 
     // Map DATA region to memory and assign the base pointer
-    base = mmap(NULL, (1+DATA_SIZE) * PAGE_SIZE, PROT_WRITE, MAP_SHARED, FD, 0);
+    base = mmap(NULL, PAGE_SIZE, PROT_WRITE, MAP_SHARED, FD, 0);
     if (base == MAP_FAILED)
     {
         printf("Failed to allocate BASE\n");
@@ -361,15 +371,9 @@ perf_event_mmap_page* alloc_pt_buf()
     }
 
     header = (perf_event_mmap_page *)base;
-    data = (uint8_t *)base + header->data_offset;
-    header->data_head = (uint64_t)data;
-    header->data_tail = header->data_head + header->data_size;
     header->aux_offset = header->data_offset + header->data_size;
     header->aux_size = AUX_SIZE * PAGE_SIZE;
     
-    // printf("+   DATA: 0x%llx-0x%llx (%llu bytes)\n",
-    //         header->data_head, header->data_tail, header->data_size);
-            
     // Map AUX region to memory
     aux = mmap(NULL, header->aux_size, PROT_READ, MAP_SHARED, FD, header->aux_offset);
     if (aux == MAP_FAILED)
@@ -381,8 +385,11 @@ perf_event_mmap_page* alloc_pt_buf()
     header->aux_head = (uint64_t)aux;
     header->aux_tail = header->aux_head + header->aux_size;
 
-    // printf("+   AUX: 0x%llx-0x%llx (%llu bytes)\n",
-    //         header->aux_head, header->aux_tail, header->aux_size);
+    if (verbose)
+    {
+        printf("+   AUX: 0x%llx-0x%llx (%llu bytes)\n",
+                header->aux_head, header->aux_tail, header->aux_size);
+    }
 
     return header;
 }
@@ -392,16 +399,36 @@ int main(int argc, char** argv)
     vector<struct gm_file_link> links;
     gm_trace_context context;
 
-    // Arg 1: target command
-    TARGET_CMD = argv[1];
+    int argi = 1;
+
+    // Arg 1: verbose flag
+    if (strcmp(argv[argi++], "-v") == 0)
+    {
+        verbose = true;
+    }
+    else
+    {
+        argi--;
+    }
+
+    // Check for mandatory args
+    if (argc < argi+1)
+    {
+        fprintf(stderr, "Invalid args.\n");
+        return 1;
+    }
+
+    // Arg 2: target command
+    TARGET_CMD = argv[argi++];
     char* const command[] = {TARGET_CMD, NULL};
 
-    // Arg 2: target context (optional). Can be a function name
+    // Arg 3: target context (optional). Can be a function name
     //        or a range of address offsets
-    if (argc > 2)
+    if (argc > argi)
     {
-        parse_context(&context, argv[2]);
+        parse_context(&context, argv[argi++]);
     }
+    
 
     // Fork a new child process to run the target executable
     TARGET_PID = fork();
@@ -428,13 +455,23 @@ int main(int argc, char** argv)
     {
         // Allocate memory buffer for IPT
         header = alloc_pt_buf();
-        // Wait for the list of linked libraries to become fully populated
+        // Populate list of linked libraries
         monitor_maps(&links, &context);
-        // printf("Context:\n\tfunction:\t%s\n\tstart:\t\t0x%lx\n\tend:\t\t0x%lx\n",
-        //     context.function, context.start, context.end);
 
-        // Tell child process to proceed
+        if (verbose && context.end > 0)
+        {
+            printf("Context filtering enabled...\n"
+                    "+   function:\t%s\n"
+                    "+   start:\t0x%lx\n"
+                    "+   end:\t0x%lx\n",
+                context.function,
+                context.base+context.start,
+                context.base+context.end);
+        }
+
+        // Tell child process to proceed and detach ptrace
         ptrace(PTRACE_CONT, TARGET_PID);
+        ptrace(PTRACE_DETACH, TARGET_PID);
 
         // Generate IP filter string for specified range/method
         if (context.end > 0)
@@ -446,7 +483,6 @@ int main(int argc, char** argv)
                 TARGET_CMD);
 
             ioctl(FD, PERF_EVENT_IOC_SET_FILTER, filterstr);
-            // printf("IP filter: %s\n", filterstr);
         }
         
         // Enable Intel PT recording
@@ -481,11 +517,7 @@ int main(int argc, char** argv)
 	}
 
     // Set decoder options
-    // decoder.type = pdt_insn_decoder;
     options.quiet = 1;
-    options.print_stats = 1;
-    options.print_raw_insn = 1;
-    options.track_blocks = 1;
 
     // Load linked libraries into decoder image
     errcode = load_image(&links, &decoder, image, TARGET_CMD);
@@ -534,7 +566,15 @@ int main(int argc, char** argv)
 	}
 
     // Start decoding
-	decode(&decoder, &options, &stats, &context);
+    if (verbose)
+    {
+        printf("===== TRACE START =====\n");
+    }
+	decode(&decoder, &options, &stats);
+    if (verbose)
+    {
+        printf("====== TRACE END ======\n");
+    }
 
     // Disable and close the PERF event listener
     ioctl(FD, PERF_EVENT_IOC_DISABLE);

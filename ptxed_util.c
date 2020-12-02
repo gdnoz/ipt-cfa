@@ -5,9 +5,9 @@
 #include "lib/xed-interface.h"
 #include "lib/load_elf.h"
 
-#define GM_LEFT_CONTEXT (1<<0)
-#define GM_RET_PENDING (1<<1)
-#define GM_CALL_PENDING (1<<2)
+#define GM_LEFT_CONTEXT 	(1<<0)
+#define GM_RET_PENDING 		(1<<1)
+#define GM_CALL_PENDING 	(1<<2)
 
 enum ptxed_decoder_type {
 	pdt_insn_decoder,
@@ -1056,13 +1056,6 @@ static int drain_events_block(struct ptxed_decoder *decoder, uint64_t *time,
 		struct pt_event event;
 		uint64_t offset;
 
-		// GM
-		if (status & pts_ip_suppressed)
-		{
-			*ctxflags |= GM_LEFT_CONTEXT;
-		}
-		
-
 		offset = 0ull;
 		if (options->print_offset) {
 			errcode = pt_blk_get_offset(ptdec, &offset);
@@ -1073,6 +1066,12 @@ static int drain_events_block(struct ptxed_decoder *decoder, uint64_t *time,
 		status = pt_blk_event(ptdec, &event, sizeof(event));
 		if (status < 0)
 			return status;
+
+		// GM
+		if (event.type == ptev_disabled)
+		{
+			*ctxflags |= GM_LEFT_CONTEXT;
+		}
 
 		*time = event.tsc;
 
@@ -1453,7 +1452,7 @@ static void print_cfg(struct ptxed_decoder *decoder,
 				}
 				else
 				{
-					printf("*");
+					printf("|");
 				}
 				printf("JUMP  @ 0x%lx", block_prev->end_ip);
 
@@ -1489,7 +1488,7 @@ static void print_cfg(struct ptxed_decoder *decoder,
 			}
 			else
 			{
-				printf("*");
+				printf("|");
 			}
 			printf("CALL  @ 0x%lx", block_prev->end_ip);
 
@@ -1511,7 +1510,7 @@ static void print_cfg(struct ptxed_decoder *decoder,
 			}
 			else
 			{
-				printf("*");
+				printf("|");
 			}
 			printf("RET   @ 0x%lx\n", block_prev->end_ip);
 		}
@@ -1547,15 +1546,14 @@ static void print_cfg(struct ptxed_decoder *decoder,
 	// raise the RET_PENDING flag
 	if (block->iclass == ptic_return
 		|| block->iclass == ptic_far_return)
-	{
+	{	
 		*ctxflags |= GM_RET_PENDING;
 	}
 }
 
 static void decode_block(struct ptxed_decoder *decoder,
 			 const struct ptxed_options *options,
-			 struct ptxed_stats *stats,
-			 struct gm_trace_context *context)
+			 struct ptxed_stats *stats)
 {
 	struct pt_image_section_cache *iscache;
 	struct pt_block_decoder *ptdec;
@@ -1613,13 +1611,14 @@ static void decode_block(struct ptxed_decoder *decoder,
 		}
 
 		for (;;) {
+			// printf("STATUS: %d\n", status);
 			status = drain_events_block(decoder, &time, status,
-						    options, &ctxflags);
+							options, &ctxflags);
 			if (status < 0)
 				break;
 			
-			if (status & pts_eos) {
-				// GM
+			if (status & pts_eos)
+			{
 				if (ctxflags & GM_RET_PENDING)
 				{
 					ctxflags ^= GM_RET_PENDING;
@@ -1628,17 +1627,17 @@ static void decode_block(struct ptxed_decoder *decoder,
 				else if (ctxflags & GM_CALL_PENDING)
 				{
 					ctxflags ^= GM_CALL_PENDING;
-					printf("<CALL   @ 0x%lx\n", block.end_ip);
+					printf("<CALL  @ 0x%lx\n", block.end_ip);
 				}
 
 				if (!(status & pts_ip_suppressed) &&
-				    !options->quiet)
+					!options->quiet)
 					printf("[end of trace]\n");
 
 				status = -pte_eos;
 				break;
 			}
-
+			
 			if (options->print_offset || options->check) {
 				int errcode;
 
@@ -1703,8 +1702,7 @@ static void decode_block(struct ptxed_decoder *decoder,
 
 static void decode(struct ptxed_decoder *decoder,
 		   const struct ptxed_options *options,
-		   struct ptxed_stats *stats,
-		   struct gm_trace_context *context)
+		   struct ptxed_stats *stats)
 {
 	if (!decoder) {
 		printf("[internal error]\n");
@@ -1717,7 +1715,7 @@ static void decode(struct ptxed_decoder *decoder,
 		break;
 
 	case pdt_block_decoder:
-		decode_block(decoder, options, stats, context);
+		decode_block(decoder, options, stats);
 		break;
 	}
 }
