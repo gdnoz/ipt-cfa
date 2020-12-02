@@ -21,6 +21,7 @@ extern "C" {
 using namespace std;
 
 bool verbose = false;
+bool quiet = false;
 
 int FD;
 char* TARGET_CMD;
@@ -106,6 +107,33 @@ static int parse_context(gm_trace_context *context, char *arg)
     }
 
     return 0;
+}
+
+static char **parse_cmd(char *arg)
+{
+    vector <char *> ret;
+    string argstr = arg;
+    int pos = argstr.find(' '), num = 0;
+    char *cstr;
+
+    TARGET_CMD = new char[pos == -1 ? argstr.length() : pos];
+    strcpy(TARGET_CMD, argstr.substr(0, pos).c_str());
+    ret.push_back(TARGET_CMD);
+    
+    while (pos > 0)
+    {
+        int start = pos+1;
+        pos = argstr.find(' ', start);
+        
+        cstr = new char [(pos == -1 ? argstr.length() : pos)-start];
+        strcpy(cstr, argstr.substr(start, pos-start).c_str());
+
+        ret.push_back(cstr);
+    }
+
+    ret.push_back(NULL);
+
+    return &ret[0];
 }
 
 /**
@@ -401,10 +429,20 @@ int main(int argc, char** argv)
 
     int argi = 1;
 
-    // Arg 1: verbose flag
+    // Verbose flag
     if (strcmp(argv[argi++], "-v") == 0)
     {
         verbose = true;
+    }
+    else
+    {
+        argi--;
+    }
+
+    // Quiet flag
+    if (strcmp(argv[argi++], "-q") == 0)
+    {
+        quiet = true;
     }
     else
     {
@@ -418,18 +456,35 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Arg 2: target command
-    TARGET_CMD = argv[argi++];
-    char* const command[] = {TARGET_CMD, NULL};
+    // Parse target command
+    vector <char *> command;
+    string argstr = argv[argi++];
+    int pos = argstr.find(' ');
+    char *cstr;
 
-    // Arg 3: target context (optional). Can be a function name
-    //        or a range of address offsets
+    TARGET_CMD = new char[pos == -1 ? argstr.length() : pos];
+    strcpy(TARGET_CMD, argstr.substr(0, pos).c_str());
+    command.push_back(TARGET_CMD);
+
+    while (pos > 0)
+    {
+        int start = pos+1;
+        pos = argstr.find(' ', start);
+        cstr = new char [(pos == -1 ? argstr.length() : pos)-start];
+        strcpy(cstr, argstr.substr(start, pos-start).c_str());
+
+        command.push_back(cstr);
+    }
+
+    command.push_back(NULL);
+
+    // Target context (optional). Can be a function name
+    // or a range of address offsets
     if (argc > argi)
     {
         parse_context(&context, argv[argi++]);
     }
     
-
     // Fork a new child process to run the target executable
     TARGET_PID = fork();
 
@@ -439,7 +494,7 @@ int main(int argc, char** argv)
         // Pause execution of child process on exec pending decoder setup
         ptrace(PTRACE_TRACEME, 0, 0, 0);
         // Execute target
-        execve(TARGET_CMD, command, environ);
+        execve(TARGET_CMD, &command[0], environ);
         // If this command runs something has gone terribly wrong
         exit(1);
     }
@@ -517,7 +572,7 @@ int main(int argc, char** argv)
 	}
 
     // Set decoder options
-    options.quiet = 1;
+    options.quiet = quiet;
 
     // Load linked libraries into decoder image
     errcode = load_image(&links, &decoder, image, TARGET_CMD);
@@ -533,7 +588,7 @@ int main(int argc, char** argv)
     config.end = (uint8_t *)header->aux_tail;
 
     // We must set the correct cpu and specify the IP filtering
-    // config to avoid the issue described in libipt erratum SKL014
+    // config to avoid the issue described in Intel erratum SKL014
     cpu_info(&config);
 
     if (context.end > 0)
@@ -566,12 +621,12 @@ int main(int argc, char** argv)
 	}
 
     // Start decoding
-    if (verbose)
+    if (verbose && !quiet)
     {
         printf("===== TRACE START =====\n");
     }
 	decode(&decoder, &options, &stats);
-    if (verbose)
+    if (verbose && !quiet)
     {
         printf("====== TRACE END ======\n");
     }

@@ -1075,8 +1075,9 @@ static int drain_events_block(struct ptxed_decoder *decoder, uint64_t *time,
 
 		*time = event.tsc;
 
-		if (!options->quiet && !event.status_update)
-			print_event(&event, options, offset);
+		// GM
+		// if (!options->quiet && !event.status_update)
+		// 	print_event(&event, options, offset);
 	}
 
 	return status;
@@ -1229,12 +1230,6 @@ static void print_block(struct ptxed_decoder *decoder,
 	ninsn = block->ninsn;
 	if (!ninsn)
 		return;
-
-	// GM
-	// printf("BLOCK: 0x%lx -> 0x%lx (%d insns)\n",
-	// 		block->ip,
-	// 		block->end_ip,
-	// 		block->ninsn);
 
 	ip = block->ip;
 	for (;;) {
@@ -1519,14 +1514,11 @@ static void print_cfg(struct ptxed_decoder *decoder,
 	// Detect entry into context
 	if (!block_prev->ninsn || (*ctxflags & GM_LEFT_CONTEXT))
 	{
-		// Detect non-branching context exits?
+		// Detect non-branching context exits. This should not happen.
 		if (!lcreport && block_prev->ninsn)
 		{
-			// print_block(decoder, block_prev, options, stats, 0, 0);
 			printf("<EXIT  @ 0x%lx\n", block_prev->end_ip);
 		}
-		// TODO: Find out why this sometimes happens without
-		// apparently leaving the context
 		printf(">ENTER @ 0x%lx\n", block->ip);
 	}
 
@@ -1611,7 +1603,6 @@ static void decode_block(struct ptxed_decoder *decoder,
 		}
 
 		for (;;) {
-			// printf("STATUS: %d\n", status);
 			status = drain_events_block(decoder, &time, status,
 							options, &ctxflags);
 			if (status < 0)
@@ -1678,11 +1669,13 @@ static void decode_block(struct ptxed_decoder *decoder,
 			}
 
 			// GM
-			print_cfg(decoder, options, &prev_block, &block, stats, &ctxflags);
-
 			if (!options->quiet)
-				print_block(decoder, &block, options, stats,
-					    offset, time);
+				print_cfg(decoder, options, &prev_block, &block,
+							stats, &ctxflags);
+
+			// if (!options->quiet)
+			// 	print_block(decoder, &block, options, stats,
+			// 		    offset, time);
 
 			if (options->check)
 				check_block(&block, iscache, offset);

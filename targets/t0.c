@@ -1,8 +1,8 @@
-static int func()
-{
-	return 0;
-}
-
+/**
+ * Control case
+ * 
+ * Linear flow
+ */
 int main (int argc, char* argv [])
 {
 	return 0;
