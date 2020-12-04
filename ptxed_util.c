@@ -1443,19 +1443,24 @@ static void print_cfg(struct ptxed_decoder *decoder,
 				if (*ctxflags & GM_LEFT_CONTEXT)
 				{
 					lcreport = 1;
-					printf("<");
+					if (!options->quiet)
+						printf("<");
 				}
 				else
 				{
-					printf("|");
+					if (!options->quiet)
+						printf("|");
 				}
-				printf("JUMP  @ 0x%lx", block_prev->end_ip);
+				if (!options->quiet)
+					printf("JUMP  @ 0x%lx", block_prev->end_ip);
 
 				if (branchaddr != 0)
 				{
-					printf(" target: 0x%lx", branchaddr);
+					if (!options->quiet)
+						printf(" target: 0x%lx", branchaddr);
 				}
-				printf("\n");
+				if (!options->quiet)
+					printf("\n");
 			}
 		}
 		// Handle indirect calls
@@ -1479,20 +1484,25 @@ static void print_cfg(struct ptxed_decoder *decoder,
 			if (*ctxflags & GM_LEFT_CONTEXT)
 			{
 				lcreport = 1;
-				printf("<");
+				if (!options->quiet)
+					printf("<");
 			}
 			else
 			{
-				printf("|");
+				if (!options->quiet)
+					printf("|");
 			}
-			printf("CALL  @ 0x%lx", block_prev->end_ip);
+			if (!options->quiet)
+				printf("CALL  @ 0x%lx", block_prev->end_ip);
 
 			if (branchaddr != 0)
 			{
-				printf(" target: 0x%lx", branchaddr);
+				if (!options->quiet)
+					printf(" target: 0x%lx", branchaddr);
 			}
 
-			printf("\n");
+			if (!options->quiet)
+				printf("\n");
 		}
 		// Handle returns
 		else if (block_prev->iclass == ptic_return
@@ -1501,13 +1511,16 @@ static void print_cfg(struct ptxed_decoder *decoder,
 			if (*ctxflags & GM_LEFT_CONTEXT)
 			{
 				lcreport = 1;
-				printf("<");
+				if (!options->quiet)
+					printf("<");
 			}
 			else
 			{
-				printf("|");
+				if (!options->quiet)
+					printf("|");
 			}
-			printf("RET   @ 0x%lx\n", block_prev->end_ip);
+			if (!options->quiet)
+				printf("RET   @ 0x%lx\n", block_prev->end_ip);
 		}
 	}
 
@@ -1515,11 +1528,12 @@ static void print_cfg(struct ptxed_decoder *decoder,
 	if (!block_prev->ninsn || (*ctxflags & GM_LEFT_CONTEXT))
 	{
 		// Detect non-branching context exits. This should not happen.
-		if (!lcreport && block_prev->ninsn)
+		if (!lcreport && block_prev->ninsn && !options->quiet)
 		{
 			printf("<EXIT  @ 0x%lx\n", block_prev->end_ip);
 		}
-		printf(">ENTER @ 0x%lx\n", block->ip);
+		if (!options->quiet)
+			printf(">ENTER @ 0x%lx\n", block->ip);
 	}
 
 	// Reset context flags
@@ -1610,12 +1624,12 @@ static void decode_block(struct ptxed_decoder *decoder,
 			
 			if (status & pts_eos)
 			{
-				if (ctxflags & GM_RET_PENDING)
+				if (ctxflags & GM_RET_PENDING && !options->quiet)
 				{
 					ctxflags ^= GM_RET_PENDING;
 					printf("<RET   @ 0x%lx\n", block.end_ip);
 				}
-				else if (ctxflags & GM_CALL_PENDING)
+				else if (ctxflags & GM_CALL_PENDING && !options->quiet)
 				{
 					ctxflags ^= GM_CALL_PENDING;
 					printf("<CALL  @ 0x%lx\n", block.end_ip);
@@ -1669,9 +1683,9 @@ static void decode_block(struct ptxed_decoder *decoder,
 			}
 
 			// GM
-			if (!options->quiet)
-				print_cfg(decoder, options, &prev_block, &block,
-							stats, &ctxflags);
+			
+			print_cfg(decoder, options, &prev_block, &block,
+						stats, &ctxflags);
 
 			// if (!options->quiet)
 			// 	print_block(decoder, &block, options, stats,

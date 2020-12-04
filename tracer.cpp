@@ -29,7 +29,7 @@ pid_t TARGET_PID;
 
 // The DATA region is not used in this application
 const int DATA_SIZE = 0;
-const int AUX_SIZE = 4096;
+const int AUX_SIZE = 0x4000;
 
 struct gm_file_link
 {
@@ -456,7 +456,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Parse target command
+    // Target command
     vector <char *> command;
     string argstr = argv[argi++];
     int pos = argstr.find(' ');
