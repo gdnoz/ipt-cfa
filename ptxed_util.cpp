@@ -4,7 +4,6 @@
 #include <intel-pt.h>
 #include <signal.h>
 #include <wait.h>
-#include <map>
 
 extern "C" {
 #include "lib/xed-interface.h"
@@ -1380,8 +1379,7 @@ static void print_cfg(struct ptxed_decoder *decoder,
 								   const struct ptxed_options *options,
 								   struct pt_block *block_prev,
 								   struct pt_block *block,
-								   uint16_t *ctxflags,
-								   std::map<uint64_t, uint64_t> *branches)
+								   uint16_t *ctxflags)
 {
 	xed_decoded_inst_t inst;
 	xed_error_enum_t xederrcode;
@@ -1408,39 +1406,32 @@ static void print_cfg(struct ptxed_decoder *decoder,
 				|| block_prev->iclass == ptic_cond_jump
 				|| block_prev->iclass == ptic_far_jump)
 			{
-				branchaddr = (*branches)[block_prev->end_ip];
+				// Init xed components
+				mode = translate_mode(block_prev->mode);
+				xed_state_init2(&xed, mode, XED_ADDRESS_WIDTH_INVALID);
+				
 
-				if (branchaddr == 0)
-				{
-					// Init xed components
-					mode = translate_mode(block_prev->mode);
-					xed_state_init2(&xed, mode, XED_ADDRESS_WIDTH_INVALID);
-					
-
-					// Decode last instruction
-					errcode = block_fetch_insn(&insn, block_prev, block_prev->end_ip,
-												decoder->iscache);
-					if (errcode < 0) {
-						printf(" [fetch error: %s]\n",
-								pt_errstr(pt_errcode(errcode)));
-						return;
-					}
-					xed_decoded_inst_zero_set_mode(&inst, &xed);
-					xederrcode = xed_decode(&inst, insn.raw, insn.size);
-					if (xederrcode != XED_ERROR_NONE) {
-						print_raw_insn(&insn);
-
-						printf(" [xed decode error: (%u) %s]\n", xederrcode,
-								xed_error_enum_t2str(xederrcode));
-						return;
-					}
-					// xed_print_insn(&inst, block_prev->end_ip, options);
-
-					// Get branch target
-					xed_next_ip(&branchaddr, &inst, block_prev->end_ip);
-					
-					(*branches)[block_prev->end_ip] = branchaddr;
+				// Decode last instruction
+				errcode = block_fetch_insn(&insn, block_prev, block_prev->end_ip,
+											decoder->iscache);
+				if (errcode < 0) {
+					printf(" [fetch error: %s]\n",
+							pt_errstr(pt_errcode(errcode)));
+					return;
 				}
+				xed_decoded_inst_zero_set_mode(&inst, &xed);
+				xederrcode = xed_decode(&inst, insn.raw, insn.size);
+				if (xederrcode != XED_ERROR_NONE) {
+					print_raw_insn(&insn);
+
+					printf(" [xed decode error: (%u) %s]\n", xederrcode,
+							xed_error_enum_t2str(xederrcode));
+					return;
+				}
+				// xed_print_insn(&inst, block_prev->end_ip, options);
+
+				// Get branch target
+				xed_next_ip(&branchaddr, &inst, block_prev->end_ip);					
 			}
 			else
 			{
@@ -1448,7 +1439,7 @@ static void print_cfg(struct ptxed_decoder *decoder,
 			}
 			
 			// Ignore conditional jumps not taken
-			if (*ctxflags & GM_LEFT_CONTEXT
+			if ((*ctxflags & GM_LEFT_CONTEXT)
 				|| !(block_prev->iclass == ptic_cond_jump
 				&& branchaddr != block->ip))
 			{
@@ -1556,11 +1547,8 @@ static void decode_block(struct ptxed_decoder *decoder,
 	struct pt_image_section_cache *iscache;
 	struct pt_block_decoder *ptdec;
 	uint64_t offset, offset_prev, offset_max, offset_pause,
-				sync, time;
+				count, count_pause, sync, time;
 	bool skip = false;
-
-	// GM
-	std::map<uint64_t, uint64_t> branch_map;
 
 	if (!decoder || !options) {
 		printf("[internal error]\n");
@@ -1573,6 +1561,7 @@ static void decode_block(struct ptxed_decoder *decoder,
 	offset_prev = 0ull;
 	offset_max = get_max_offset(ptdec);
 	offset_pause = 0ull;
+	count = 0ull;
 	sync = 0ull;
 	time = 0ull;
 
@@ -1629,36 +1618,31 @@ static void decode_block(struct ptxed_decoder *decoder,
 				break;
 			if (status & pts_eos)
 			{
-				// Check if target process is still running, if so, try again!
+				// Check if target process is still running
+				// If so, return to previous sync point and continue!
 				if (istargetrunning || skip)
 				{
 					uint64_t syncoffset;
 					offset_pause = offset_prev;
-					// printf("0x%lx\n", offset_prev);
 
 					// Synchronize to the last PSB
 					pt_blk_get_sync_offset(ptdec, &syncoffset);
-					// printf("Sync offset: 0x%lx\n", syncoffset);
-					// printf("Target still running! 0x%lx\n", offset_prev);
 					pt_blk_sync_set(ptdec, syncoffset);
 
 					// Update the offset variable
 					pt_blk_get_offset(ptdec, &offset);
 
-					// TODO
 					int64_t repeat = offset_prev - offset;
 					if (repeat < 0)
 					{
 						pt_blk_sync_backward(ptdec);
-						// offset_prev = offset;
 						pt_blk_get_offset(ptdec, &offset);
 						repeat = offset_prev - offset;
 					}
-
-					// printf("[Repeating %ld bytes of data]\n", repeat);
 					
 					skip = true;
 					status = 0;
+					count = 0;
 					continue;
 				}
 				
@@ -1717,26 +1701,33 @@ static void decode_block(struct ptxed_decoder *decoder,
 			}
 
 			// GM
+			// If we had to revert to the previous sync point,
+			// some special handling is required to skip the
+			// blocks already decoded
 			if (offset_pause > 0)
 			{
-				// printf("0x%lx:0x%lx:0x%lx\n",
-				// 	offset_prev,
-				// 	offset,
-				// 	offset_pause);
-				if (offset < offset_max && offset_prev < offset)
+				// Once the decoder has caught up with its
+				// previous position, stop skipping
+				if (offset < offset_max && offset_prev <= offset)
 				{
 					skip = false;
 				}
 				
+				// Skip the current block if skipping
 				if (skip)
 				{
 					continue;
 				}
-				else if (offset_prev <= offset_pause)
+				else if (count == 0)
 				{
-					offset_prev = offset;
+					count++;
 					continue;
 				}
+			}
+
+			if (offset != offset_prev)
+			{
+				count = 0;
 			}
 
 			if (offset < offset_max && offset_prev < offset)
@@ -1750,8 +1741,9 @@ static void decode_block(struct ptxed_decoder *decoder,
 			}
 
 			// GM
+			count++;
 			print_cfg(decoder, options, &prev_block, &block,
-						&ctxflags, &branch_map);
+						&ctxflags);
 
 			// if (!options->quiet)
 			// 	print_block(decoder, &block, options, stats,
@@ -1760,8 +1752,6 @@ static void decode_block(struct ptxed_decoder *decoder,
 			if (options->check)
 				check_block(&block, iscache, offset);
 		}
-
-		// printf("%d\n", status);
 
 		/* We shouldn't break out of the loop without an error. */
 		if (!status)
