@@ -1,9 +1,14 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <intel-pt.h>
+#include <signal.h>
+#include <wait.h>
+#include <map>
 
+extern "C" {
 #include "lib/xed-interface.h"
-#include "lib/load_elf.h"
+}
 
 #define GM_LEFT_CONTEXT 	(1<<0)
 #define GM_RET_PENDING 		(1<<1)
@@ -1074,7 +1079,6 @@ static int drain_events_block(struct ptxed_decoder *decoder, uint64_t *time,
 		}
 
 		*time = event.tsc;
-
 		// GM
 		// if (!options->quiet && !event.status_update)
 		// 	print_event(&event, options, offset);
@@ -1376,65 +1380,73 @@ static void print_cfg(struct ptxed_decoder *decoder,
 								   const struct ptxed_options *options,
 								   struct pt_block *block_prev,
 								   struct pt_block *block,
-								   struct ptxed_stats *stats,
-								   uint16_t *ctxflags)
+								   uint16_t *ctxflags,
+								   std::map<uint64_t, uint64_t> *branches)
 {
-	xed_machine_mode_enum_t mode;
 	xed_decoded_inst_t inst;
 	xed_error_enum_t xederrcode;
-	xed_print_info_t pi;
-	xed_state_t xed;
 	struct pt_insn insn;
-	char buffer[256], target[128];
 	int errcode;
 	int lcreport = 0;
 	long unsigned int branchaddr;
-
-	// Init xed components
-	mode = translate_mode(block_prev->mode);
-	xed_state_init2(&xed, mode, XED_ADDRESS_WIDTH_INVALID);
+	xed_machine_mode_enum_t mode;
+	xed_state_t xed;
 
 	// Detect leaving context
 	// Get previous instruction
 	if (block_prev->ninsn)
 	{
-		errcode = block_fetch_insn(&insn, block_prev, block_prev->end_ip,
-									decoder->iscache);
-		if (errcode < 0) {
-			printf(" [fetch error: %s]\n",
-					pt_errstr(pt_errcode(errcode)));
-			return;
-		}
-
-		// Decode last instruction
-		xed_decoded_inst_zero_set_mode(&inst, &xed);
-		xederrcode = xed_decode(&inst, insn.raw, insn.size);
-		if (xederrcode != XED_ERROR_NONE) {
-			print_raw_insn(&insn);
-
-			printf(" [xed decode error: (%u) %s]\n", xederrcode,
-					xed_error_enum_t2str(xederrcode));
-			return;
-		}
-
-		// Handle jumps
+		// Handle jumps and calls
 		if (block_prev->iclass == ptic_jump
 			|| block_prev->iclass == ptic_cond_jump
-			|| block_prev->iclass == ptic_far_jump)
+			|| block_prev->iclass == ptic_far_jump
+			|| block_prev->iclass == ptic_call
+			|| block_prev->iclass == ptic_far_call)
 		{
-			// Print last insn information
-			xed_init_print_info(&pi);
-			pi.p = &inst;
-			pi.buf = buffer;
-			pi.blen = sizeof(buffer);
-			pi.runtime_address = insn.ip;
+			
+			if (block_prev->iclass == ptic_jump
+				|| block_prev->iclass == ptic_cond_jump
+				|| block_prev->iclass == ptic_far_jump)
+			{
+				branchaddr = (*branches)[block_prev->end_ip];
 
-			xed_format_generic(&pi);
+				if (branchaddr == 0)
+				{
+					// Init xed components
+					mode = translate_mode(block_prev->mode);
+					xed_state_init2(&xed, mode, XED_ADDRESS_WIDTH_INVALID);
+					
 
-			// Retrieve operand address
-			extract_target(target, pi.buf);
-			branchaddr = strtoul(target, NULL, 16);
+					// Decode last instruction
+					errcode = block_fetch_insn(&insn, block_prev, block_prev->end_ip,
+												decoder->iscache);
+					if (errcode < 0) {
+						printf(" [fetch error: %s]\n",
+								pt_errstr(pt_errcode(errcode)));
+						return;
+					}
+					xed_decoded_inst_zero_set_mode(&inst, &xed);
+					xederrcode = xed_decode(&inst, insn.raw, insn.size);
+					if (xederrcode != XED_ERROR_NONE) {
+						print_raw_insn(&insn);
 
+						printf(" [xed decode error: (%u) %s]\n", xederrcode,
+								xed_error_enum_t2str(xederrcode));
+						return;
+					}
+					// xed_print_insn(&inst, block_prev->end_ip, options);
+
+					// Get branch target
+					xed_next_ip(&branchaddr, &inst, block_prev->end_ip);
+					
+					(*branches)[block_prev->end_ip] = branchaddr;
+				}
+			}
+			else
+			{
+				branchaddr = 0;
+			}
+			
 			// Ignore conditional jumps not taken
 			if (*ctxflags & GM_LEFT_CONTEXT
 				|| !(block_prev->iclass == ptic_cond_jump
@@ -1451,58 +1463,30 @@ static void print_cfg(struct ptxed_decoder *decoder,
 					if (!options->quiet)
 						printf("|");
 				}
-				if (!options->quiet)
-					printf("JUMP  @ 0x%lx", block_prev->end_ip);
 
-				if (branchaddr != 0)
+				if ((block_prev->iclass == ptic_jump
+					|| block_prev->iclass == ptic_cond_jump
+					|| block_prev->iclass == ptic_far_jump)
+					&& !options->quiet)
 				{
-					if (!options->quiet)
-						printf(" target: 0x%lx", branchaddr);
+					printf("JUMP  ");
 				}
+				else if ((block_prev->iclass == ptic_call
+					|| block_prev->iclass == ptic_far_call)
+					&& !options->quiet)
+				{
+					printf("CALL  ");
+				}
+
+				if (!options->quiet)
+					printf("@ 0x%lx", block_prev->end_ip);
+
+				if (branchaddr != 0 && !options->quiet)
+						printf(" target: 0x%lx", branchaddr);
+
 				if (!options->quiet)
 					printf("\n");
 			}
-		}
-		// Handle indirect calls
-		else if (block_prev->iclass == ptic_call
-			|| block_prev->iclass == ptic_far_call)
-		{
-			// Print last insn information
-			xed_init_print_info(&pi);
-			pi.p = &inst;
-			pi.buf = buffer;
-			pi.blen = sizeof(buffer);
-			pi.runtime_address = insn.ip;
-
-			xed_format_generic(&pi);
-
-			// Retrieve operand address
-			extract_target(target, pi.buf);
-			branchaddr = strtoul(target, NULL, 16);
-
-			// Check if address falls outside context
-			if (*ctxflags & GM_LEFT_CONTEXT)
-			{
-				lcreport = 1;
-				if (!options->quiet)
-					printf("<");
-			}
-			else
-			{
-				if (!options->quiet)
-					printf("|");
-			}
-			if (!options->quiet)
-				printf("CALL  @ 0x%lx", block_prev->end_ip);
-
-			if (branchaddr != 0)
-			{
-				if (!options->quiet)
-					printf(" target: 0x%lx", branchaddr);
-			}
-
-			if (!options->quiet)
-				printf("\n");
 		}
 		// Handle returns
 		else if (block_prev->iclass == ptic_return
@@ -1557,13 +1541,26 @@ static void print_cfg(struct ptxed_decoder *decoder,
 	}
 }
 
+static uint64_t get_max_offset(pt_block_decoder *decoder)
+{
+	const pt_config *config = pt_blk_get_config(decoder);
+
+	return config->end - config->begin;
+}
+
 static void decode_block(struct ptxed_decoder *decoder,
-			 const struct ptxed_options *options,
-			 struct ptxed_stats *stats)
+			 struct ptxed_options *options,
+			 struct ptxed_stats *stats,
+			 pid_t targetpid)
 {
 	struct pt_image_section_cache *iscache;
 	struct pt_block_decoder *ptdec;
-	uint64_t offset, sync, time;
+	uint64_t offset, offset_prev, offset_max, offset_pause,
+				sync, time;
+	bool skip = false;
+
+	// GM
+	std::map<uint64_t, uint64_t> branch_map;
 
 	if (!decoder || !options) {
 		printf("[internal error]\n");
@@ -1573,6 +1570,9 @@ static void decode_block(struct ptxed_decoder *decoder,
 	iscache = decoder->iscache;
 	ptdec = decoder->variant.block;
 	offset = 0ull;
+	offset_prev = 0ull;
+	offset_max = get_max_offset(ptdec);
+	offset_pause = 0ull;
 	sync = 0ull;
 	time = 0ull;
 
@@ -1617,13 +1617,51 @@ static void decode_block(struct ptxed_decoder *decoder,
 		}
 
 		for (;;) {
+			// Check whether target is still running
+			bool istargetrunning = waitpid(targetpid, NULL, WNOHANG) == 0;
+
+			pt_blk_get_offset(ptdec, &offset);
+
 			status = drain_events_block(decoder, &time, status,
 							options, &ctxflags);
+
 			if (status < 0)
 				break;
-			
 			if (status & pts_eos)
 			{
+				// Check if target process is still running, if so, try again!
+				if (istargetrunning || skip)
+				{
+					uint64_t syncoffset;
+					offset_pause = offset_prev;
+					// printf("0x%lx\n", offset_prev);
+
+					// Synchronize to the last PSB
+					pt_blk_get_sync_offset(ptdec, &syncoffset);
+					// printf("Sync offset: 0x%lx\n", syncoffset);
+					// printf("Target still running! 0x%lx\n", offset_prev);
+					pt_blk_sync_set(ptdec, syncoffset);
+
+					// Update the offset variable
+					pt_blk_get_offset(ptdec, &offset);
+
+					// TODO
+					int64_t repeat = offset_prev - offset;
+					if (repeat < 0)
+					{
+						pt_blk_sync_backward(ptdec);
+						// offset_prev = offset;
+						pt_blk_get_offset(ptdec, &offset);
+						repeat = offset_prev - offset;
+					}
+
+					// printf("[Repeating %ld bytes of data]\n", repeat);
+					
+					skip = true;
+					status = 0;
+					continue;
+				}
+				
 				if (ctxflags & GM_RET_PENDING && !options->quiet)
 				{
 					ctxflags ^= GM_RET_PENDING;
@@ -1635,14 +1673,15 @@ static void decode_block(struct ptxed_decoder *decoder,
 					printf("<CALL  @ 0x%lx\n", block.end_ip);
 				}
 
-				if (!(status & pts_ip_suppressed) &&
-					!options->quiet)
+				if (!(status & pts_ip_suppressed) && !options->quiet)
+				{
 					printf("[end of trace]\n");
+				}
 
 				status = -pte_eos;
 				break;
 			}
-			
+
 			if (options->print_offset || options->check) {
 				int errcode;
 
@@ -1653,8 +1692,8 @@ static void decode_block(struct ptxed_decoder *decoder,
 
 			// GM
 			prev_block = block;
-
 			status = pt_blk_next(ptdec, &block, sizeof(block));
+
 			if (status < 0) {
 				/* Even in case of errors, we may have succeeded
 				 * in decoding some instructions.
@@ -1677,15 +1716,42 @@ static void decode_block(struct ptxed_decoder *decoder,
 				break;
 			}
 
+			// GM
+			if (offset_pause > 0)
+			{
+				// printf("0x%lx:0x%lx:0x%lx\n",
+				// 	offset_prev,
+				// 	offset,
+				// 	offset_pause);
+				if (offset < offset_max && offset_prev < offset)
+				{
+					skip = false;
+				}
+				
+				if (skip)
+				{
+					continue;
+				}
+				else if (offset_prev <= offset_pause)
+				{
+					offset_prev = offset;
+					continue;
+				}
+			}
+
+			if (offset < offset_max && offset_prev < offset)
+			{
+				offset_prev = offset;
+			}
+
 			if (stats) {
 				stats->insn += block.ninsn;
 				stats->blocks += 1;
 			}
 
 			// GM
-			
 			print_cfg(decoder, options, &prev_block, &block,
-						stats, &ctxflags);
+						&ctxflags, &branch_map);
 
 			// if (!options->quiet)
 			// 	print_block(decoder, &block, options, stats,
@@ -1695,6 +1761,8 @@ static void decode_block(struct ptxed_decoder *decoder,
 				check_block(&block, iscache, offset);
 		}
 
+		// printf("%d\n", status);
+
 		/* We shouldn't break out of the loop without an error. */
 		if (!status)
 			status = -pte_internal;
@@ -1703,13 +1771,15 @@ static void decode_block(struct ptxed_decoder *decoder,
 		if (status == -pte_eos)
 			break;
 
-		diagnose_block(decoder, "error", status, &block);
+		// GM
+		// diagnose_block(decoder, "error", status, &block);
 	}
 }
 
 static void decode(struct ptxed_decoder *decoder,
-		   const struct ptxed_options *options,
-		   struct ptxed_stats *stats)
+		   struct ptxed_options *options,
+		   struct ptxed_stats *stats,
+		   pid_t targetpid)
 {
 	if (!decoder) {
 		printf("[internal error]\n");
@@ -1722,7 +1792,7 @@ static void decode(struct ptxed_decoder *decoder,
 		break;
 
 	case pdt_block_decoder:
-		decode_block(decoder, options, stats);
+		decode_block(decoder, options, stats, targetpid);
 		break;
 	}
 }

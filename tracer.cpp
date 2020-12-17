@@ -14,9 +14,7 @@
 #include <cpuid.h>
 
 #include "lib/load_elf.h"
-extern "C" {
-#include "ptxed_util.c"
-}
+#include "ptxed_util.cpp"
 
 using namespace std;
 
@@ -28,8 +26,8 @@ char* TARGET_CMD;
 pid_t TARGET_PID;
 
 // The DATA region is not used in this application
-const int DATA_SIZE = 0;
-const int AUX_SIZE = 0x4000;
+const size_t DATA_SIZE = 0;
+const size_t AUX_SIZE = 0x4000;
 
 struct gm_file_link
 {
@@ -524,19 +522,23 @@ int main(int argc, char** argv)
                 context.base+context.end);
         }
 
-        // Tell child process to proceed and detach ptrace
-        ptrace(PTRACE_CONT, TARGET_PID);
-        ptrace(PTRACE_DETACH, TARGET_PID);
-
         // Generate IP filter string for specified range/method
+        char filterstr[128];
         if (context.end > 0)
         {
-            char filterstr[128];
             snprintf(filterstr, 128, "filter 0x%lx/%lu@%s",
                 context.start,
                 context.end-context.start,
                 TARGET_CMD);
+        }
 
+        // Tell child process to proceed
+        ptrace(PTRACE_CONT, TARGET_PID);
+        ptrace(PTRACE_DETACH, TARGET_PID);
+
+        // Apply IP filter
+        if (context.end > 0)
+        {
             ioctl(FD, PERF_EVENT_IOC_SET_FILTER, filterstr);
         }
         
@@ -573,6 +575,7 @@ int main(int argc, char** argv)
 
     // Set decoder options
     options.quiet = quiet;
+    // options.track_blocks = 1;
 
     // Load linked libraries into decoder image
     errcode = load_image(&links, &decoder, image, TARGET_CMD);
@@ -625,7 +628,7 @@ int main(int argc, char** argv)
     {
         printf("===== TRACE START =====\n");
     }
-	decode(&decoder, &options, &stats);
+	decode(&decoder, &options, &stats, TARGET_PID);
     if (verbose && !quiet)
     {
         printf("====== TRACE END ======\n");
