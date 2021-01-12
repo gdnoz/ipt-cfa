@@ -2,11 +2,9 @@
  * Case 7
  * 
  * Scalability test:
- * Variable loop with linear operations
+ * Variable loops inside and outside context
  */
 #include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
 
 int foo(int loops)
 {
@@ -30,8 +28,6 @@ int main (int argc, char* argv [])
     {
         foo(outscale);
     }
-
-    printf("[!!!!!!!!Done!!!!!!!!]\n");
 
     return 0;
 }

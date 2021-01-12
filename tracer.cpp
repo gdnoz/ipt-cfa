@@ -2,6 +2,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <chrono>
 
 #include <unistd.h>
 #include <syscall.h>
@@ -18,16 +19,27 @@
 
 using namespace std;
 
+// Variables for internal timing
+chrono::high_resolution_clock::time_point total_start,
+                                          total_finish,
+                                          tsetup_start,
+                                          tsetup_finish,
+                                          trace_start,
+                                          trace_finish,
+                                          decode_start,
+                                          decode_finish;
+
 bool verbose = false;
 bool quiet = false;
+bool timing = false;
 
 int FD;
 char* TARGET_CMD;
 pid_t TARGET_PID;
 
 // The DATA region is not used in this application
-const size_t DATA_SIZE = 0;
-const size_t AUX_SIZE = 0x4000;
+size_t DATA_SIZE = 0;
+size_t AUX_SIZE = 0x800;
 
 struct gm_file_link
 {
@@ -38,6 +50,11 @@ struct gm_file_link
 void report_error(int err)
 {
     printf("ERROR %d: %s\n", err, pt_errstr(pt_errcode(err)));
+}
+
+static void sigchld_handler(int sig)
+{
+    trace_finish = chrono::high_resolution_clock::now();
 }
 
 /**
@@ -422,6 +439,10 @@ perf_event_mmap_page* alloc_pt_buf()
 
 int main(int argc, char** argv)
 {
+    // Start the trace setup timer
+    total_start = chrono::high_resolution_clock::now();
+    tsetup_start = total_start;
+
     vector<struct gm_file_link> links;
     gm_trace_context context;
 
@@ -446,6 +467,19 @@ int main(int argc, char** argv)
     {
         argi--;
     }
+
+    // Timer flag
+    if (strcmp(argv[argi++], "-t") == 0)
+    {
+        timing = true;
+    }
+    else
+    {
+        argi--;
+    }
+
+    // Buffer size
+    AUX_SIZE = atol(argv[argi++]);
 
     // Check for mandatory args
     if (argc < argi+1)
@@ -544,6 +578,15 @@ int main(int argc, char** argv)
         
         // Enable Intel PT recording
         ioctl(FD, PERF_EVENT_IOC_ENABLE);
+
+        // Stop the trace setup timer and start the trace timer
+        tsetup_finish = chrono::high_resolution_clock::now();
+        trace_start = tsetup_finish;
+        // Also start the decoder timer
+        decode_start = trace_start;
+
+        // Assign the SIGCHLD handler
+        signal(SIGCHLD, sigchld_handler);
     }
 
 	struct ptxed_decoder decoder;
@@ -628,7 +671,9 @@ int main(int argc, char** argv)
     {
         printf("===== TRACE START =====\n");
     }
-	decode(&decoder, &options, &stats, TARGET_PID);
+    decode(&decoder, &options, &stats, TARGET_PID);
+    // Stop the decode timer
+    decode_finish = chrono::high_resolution_clock::now();
     if (verbose && !quiet)
     {
         printf("====== TRACE END ======\n");
@@ -642,6 +687,22 @@ int main(int argc, char** argv)
 	if (options.print_stats)
     {
 		print_stats(&stats);
+    }
+
+    // Stop the total timer
+    total_finish = chrono::high_resolution_clock::now();
+
+    if (timing)
+    {
+        // Print timers
+        chrono::duration<double> total_d = total_finish - total_start;
+        chrono::duration<double> tsetup_d = tsetup_finish - tsetup_start;
+        chrono::duration<double> trace_d = trace_finish - trace_start;
+        chrono::duration<double> decode_d = decode_finish - decode_start;
+        cout << total_d.count()*1000 << "\n";
+        cout << tsetup_d.count()*1000 << "\n";
+        cout << trace_d.count()*1000 << "\n";
+        cout << decode_d.count()*1000 << "\n";
     }
 
     return 0;

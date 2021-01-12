@@ -1390,6 +1390,22 @@ static void print_cfg(struct ptxed_decoder *decoder,
 	xed_machine_mode_enum_t mode;
 	xed_state_t xed;
 
+	// Skip blocks that do not match flags
+	if (((block_prev->iclass == ptic_call
+		|| block_prev->iclass == ptic_far_call)
+		&& (*ctxflags & GM_RET_PENDING))
+		|| ((block_prev->iclass == ptic_return
+		|| block_prev->iclass == ptic_far_return)
+		&& (*ctxflags & GM_CALL_PENDING))
+		|| ((block_prev->iclass == ptic_jump
+		|| block_prev->iclass == ptic_far_jump
+		|| block_prev->iclass == ptic_cond_jump)
+		&& ((*ctxflags & GM_RET_PENDING)
+		|| (*ctxflags & GM_CALL_PENDING))))
+	{
+		return;
+	}
+
 	// Detect leaving context
 	// Get previous instruction
 	if (block_prev->ninsn)
@@ -1404,7 +1420,7 @@ static void print_cfg(struct ptxed_decoder *decoder,
 			
 			if (block_prev->iclass == ptic_jump
 				|| block_prev->iclass == ptic_cond_jump
-				|| block_prev->iclass == ptic_far_jump)
+				|| block_prev->iclass == ptic_call)
 			{
 				// Init xed components
 				mode = translate_mode(block_prev->mode);
@@ -1431,7 +1447,7 @@ static void print_cfg(struct ptxed_decoder *decoder,
 				// xed_print_insn(&inst, block_prev->end_ip, options);
 
 				// Get branch target
-				xed_next_ip(&branchaddr, &inst, block_prev->end_ip);					
+				xed_next_ip(&branchaddr, &inst, block_prev->end_ip);
 			}
 			else
 			{
@@ -1548,7 +1564,7 @@ static void decode_block(struct ptxed_decoder *decoder,
 	struct pt_block_decoder *ptdec;
 	uint64_t offset, offset_prev, offset_max, offset_pause,
 				count, count_pause, sync, time;
-	bool skip = false;
+	bool skip = false, lasttry = false;
 
 	if (!decoder || !options) {
 		printf("[internal error]\n");
@@ -1618,16 +1634,29 @@ static void decode_block(struct ptxed_decoder *decoder,
 				break;
 			if (status & pts_eos)
 			{
+				// Workaround for early-abort edge case
+				if (!lasttry && !istargetrunning && !skip)
+				{
+					count--;
+					lasttry = true;
+				}
+				else
+				{
+					lasttry = false;
+				}
+
 				// Check if target process is still running
 				// If so, return to previous sync point and continue!
-				if (istargetrunning || skip)
+				if (istargetrunning || skip || lasttry)
 				{
+					// printf("SKIP\n");
 					uint64_t syncoffset;
 					offset_pause = offset_prev;
 
 					// Synchronize to the last PSB
 					pt_blk_get_sync_offset(ptdec, &syncoffset);
 					pt_blk_sync_set(ptdec, syncoffset);
+					// pt_blk_sync_forward(ptdec);
 
 					// Update the offset variable
 					pt_blk_get_offset(ptdec, &offset);
@@ -1641,12 +1670,18 @@ static void decode_block(struct ptxed_decoder *decoder,
 					}
 					
 					skip = true;
-					status = 0;
+					count_pause = count;
 					count = 0;
+					status = 0;
 					continue;
 				}
-				
-				if (ctxflags & GM_RET_PENDING && !options->quiet)
+
+				// printf("OUT: 0x%lx 0x%lx 0x%lx, %lu %lu %d %d %d\n",
+				// 	offset, offset_prev, offset_pause,
+				// 	count, count_pause,
+				// 	istargetrunning, skip, lasttry);
+
+				if (ctxflags & GM_RET_PENDING)// && !options->quiet)
 				{
 					ctxflags ^= GM_RET_PENDING;
 					printf("<RET   @ 0x%lx\n", block.end_ip);
@@ -1704,6 +1739,8 @@ static void decode_block(struct ptxed_decoder *decoder,
 			// If we had to revert to the previous sync point,
 			// some special handling is required to skip the
 			// blocks already decoded
+			// printf("0x%lx 0x%lx 0x%lx %lu %lu\n", offset, offset_prev, offset_pause, count, count_pause);
+
 			if (offset_pause > 0)
 			{
 				// Once the decoder has caught up with its
@@ -1711,6 +1748,7 @@ static void decode_block(struct ptxed_decoder *decoder,
 				if (offset < offset_max && offset_prev <= offset)
 				{
 					skip = false;
+					// offset_pause = 0;
 				}
 				
 				// Skip the current block if skipping
@@ -1718,14 +1756,18 @@ static void decode_block(struct ptxed_decoder *decoder,
 				{
 					continue;
 				}
-				else if (count == 0)
+				if (count < count_pause)
 				{
 					count++;
 					continue;
 				}
+				else
+				{
+					count_pause = 0;
+				}
 			}
 
-			if (offset != offset_prev)
+			if (offset < offset_max && offset != offset_prev)
 			{
 				count = 0;
 			}
@@ -1742,6 +1784,8 @@ static void decode_block(struct ptxed_decoder *decoder,
 
 			// GM
 			count++;
+			printf("%lu %lu\n", count, count_pause);
+			// lasttry = false;
 			print_cfg(decoder, options, &prev_block, &block,
 						&ctxflags);
 

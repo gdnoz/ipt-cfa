@@ -13,5 +13,6 @@ gcc targets/t4.c -O0 -o bin/t4
 gcc targets/t5.c -O0 -o bin/t5
 gcc targets/t6.c -O0 -o bin/t6
 gcc targets/t7.c -O0 -o bin/t7
+gcc targets/t8.c -O0 -o bin/t8
 #cleanup .o files
 rm bin/*.o
