@@ -1784,8 +1784,6 @@ static void decode_block(struct ptxed_decoder *decoder,
 
 			// GM
 			count++;
-			printf("%lu %lu\n", count, count_pause);
-			// lasttry = false;
 			print_cfg(decoder, options, &prev_block, &block,
 						&ctxflags);
 
