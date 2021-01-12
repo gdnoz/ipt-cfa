@@ -72,7 +72,7 @@ print("iterations,iterations out-of-context,buffer size,without trace,with trace
 
 for i in range(5):
     for j in range(999, 1000000, 1000):
-        it_out = 4000#pow(10, i)
+        it_out = pow(10, i)
         it_in = j+1
 
         # Set arguments
