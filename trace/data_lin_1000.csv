@@ -1,3 +1,4 @@
+iterations;buffer size;without trace;with trace;overhead ratio;trace time;decode time
 1000;2;1.71;5.07221;196.62%;2.103495;4.75018
 2000;4;2.98;6.68514;124.33%;3.521244;6.39693
 3000;8;4.55;11.4495;151.64%;4.804636;11.0992

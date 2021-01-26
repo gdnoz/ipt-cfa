@@ -68,7 +68,7 @@ buf_size = 0
 
 # Print header
 # iterations out-of-context;
-print("iterations;iterations out-of-context;buffer size;without trace;with trace;overhead ratio;trace time;decode time")
+print("iterations;buffer size;without trace;with trace;overhead ratio;trace time;decode time")
 
 for i in range(5):
     for j in range(999, 1000000, 1000):
