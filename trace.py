@@ -67,8 +67,8 @@ buf_sizes = {
 buf_size = 0
 
 # Print header
-# iterations out-of-context,
-print("iterations,iterations out-of-context,buffer size,without trace,with trace,overhead ratio,trace time,decode time")
+# iterations out-of-context;
+print("iterations;iterations out-of-context;buffer size;without trace;with trace;overhead ratio;trace time;decode time")
 
 for i in range(5):
     for j in range(999, 1000000, 1000):
@@ -108,12 +108,12 @@ for i in range(5):
             [time_td, time_t, time_d] = measure_trace(trace_cmd)
             overhead = ((time_td-time_notrace)/time_notrace)*100
 
-        print(str(it_in)+','
-            +str(it_out)+','
-            +str(buf_size)+','
-            +str(time_notrace)+','
-            +str(time_td)+','
-            +str(overhead)+'%,'
-            +str(time_t)+','
+        print(str(it_in)+';'
+            +str(it_out)+';'
+            +str(buf_size)+';'
+            +str(time_notrace)+';'
+            +str(time_td)+';'
+            +str(overhead)+'%;'
+            +str(time_t)+';'
             +str(time_d),
             flush=True)
